@@ -5,9 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>経路検索アプリ</title>
 
-    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyB_Tmq8Qn3F269Jx1ehDA7xcpWFHTxRoBQ&libraries=places"></script>
+    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyB_Tmq8Qn3F269Jx1ehDA7xcpWFHTxRoBQ&libraries=places,geometry"></script>
 
     <style>
+        body { font-family: sans-serif; margin: 0; padding: 0; }
+        h1 { margin: 8px 10px; font-size: 1.1rem; }
 
         #controls {
             margin: 10px;
@@ -66,6 +68,7 @@
     <div id="controls">
         <input id="location-input" type="text" placeholder="地点を検索">
         <button id="search-location">検索</button>
+        <button id="random-world-route">世界ランダム</button>
 <br>
         <button id="set-start">起点に設定</button>
         <button id="add-waypoint">経由地に追加</button>

@@ -17,10 +17,16 @@ let route = [];
 let isStreetViewRunning = false;
 
 // --- 設定値 ---
-const STREETVIEW_RADIUS = 50;       // ストリートビュー検索半径（メートル）
-const LOOKAHEAD_POINTS = 2;         // 進行方向を決めるための先読みポイント数
-const INTERVAL_MS = 3000;           // ストリートビュー移動間隔（ミリ秒）
-const ROUTE_SAMPLE_RATE = 5;        // 経路座標の間引き率（1/N点を使用）
+const LOOKAHEAD_POINTS  = 2;      // 進行方向の先読みポイント数
+const INTERVAL_MS       = 3000;   // ストリートビュー移動間隔（ミリ秒）
+const ROUTE_SAMPLE_RATE = 5;      // 経路座標の間引き率
+
+// ランダムルート設定
+const RANDOM_ROUTE_MIN_KM    = 5;      // 最短距離（緩めに）
+const RANDOM_ROUTE_MAX_KM    = 50;     // 最長距離（緩めに）
+const RANDOM_ROUTE_MAX_TRIES = 60;     // 最大試行回数
+const RANDOM_END_RADIUS_M    = 20000;  // 終点候補の探索半径
+const RANDOM_SV_RADIUS_M     = 2000;   // Street View スナップ半径（広めに）
 
 // =============================================
 //  初期化
@@ -35,41 +41,31 @@ function initMap() {
 
     panorama = new google.maps.StreetViewPanorama(
         document.getElementById("street-view"),
-        {
-            position: begin,
-            pov: { heading: 0, pitch: 0 },
-            zoom: 1,
-        }
+        { position: begin, pov: { heading: 0, pitch: 0 }, zoom: 1 }
     );
 
-    directionsService = new google.maps.DirectionsService();
+    directionsService  = new google.maps.DirectionsService();
     directionsRenderer = new google.maps.DirectionsRenderer();
     directionsRenderer.setMap(map);
     geocoder = new google.maps.Geocoder();
     map.setStreetView(panorama);
 
     // マップクリックでマーカーを移動
-    map.addListener("click", (event) => {
-        createMarker(event.latLng);
-    });
+    map.addListener("click", (event) => createMarker(event.latLng));
 
-    // 検索オートコンプリート設定
-    const locationInput = document.getElementById("location-input");
-    const autocomplete = new google.maps.places.Autocomplete(locationInput);
-
+    // 検索オートコンプリート
+    const autocomplete = new google.maps.places.Autocomplete(
+        document.getElementById("location-input")
+    );
     document.getElementById("search-location").addEventListener("click", () => {
         const place = autocomplete.getPlace();
-        if (!place || !place.geometry) {
-            alert("有効な地点を選択してください。");
-            return;
-        }
-        const position = place.geometry.location;
-        map.setCenter(position);
+        if (!place || !place.geometry) { alert("有効な地点を選択してください。"); return; }
+        const pos = place.geometry.location;
+        map.setCenter(pos);
         map.setZoom(16);
-        createMarker(position);
+        createMarker(pos);
     });
 
-    // 起点設定
     document.getElementById("set-start").addEventListener("click", () => {
         if (!assertMarkerExists()) return;
         startLocation = marker.getPosition();
@@ -78,7 +74,6 @@ function initMap() {
         updateButtonStates();
     });
 
-    // 終点設定
     document.getElementById("set-end").addEventListener("click", () => {
         if (!assertMarkerExists()) return;
         endLocation = marker.getPosition();
@@ -87,7 +82,6 @@ function initMap() {
         updateButtonStates();
     });
 
-    // 経由地追加
     document.getElementById("add-waypoint").addEventListener("click", () => {
         if (!assertMarkerExists()) return;
         waypoints.push({ location: marker.getPosition(), stopover: true });
@@ -96,7 +90,6 @@ function initMap() {
         if (startLocation && endLocation) calculateRoute();
     });
 
-    // 経由地クリア
     document.getElementById("clear-waypoints").addEventListener("click", () => {
         waypoints = [];
         refreshWaypointMarkers();
@@ -104,21 +97,13 @@ function initMap() {
         if (startLocation && endLocation) calculateRoute();
     });
 
-    // 経路検索
     document.getElementById("search-route").addEventListener("click", () => {
-        if (!startLocation || !endLocation) {
-            alert("起点と終点を設定してください。");
-            return;
-        }
+        if (!startLocation || !endLocation) { alert("起点と終点を設定してください。"); return; }
         calculateRoute();
     });
 
-    // 起点・終点 入れ替え
     document.getElementById("swap-locations").addEventListener("click", () => {
-        if (!startLocation || !endLocation) {
-            alert("起点または終点が設定されていません。");
-            return;
-        }
+        if (!startLocation || !endLocation) { alert("起点または終点が設定されていません。"); return; }
         [startLocation, endLocation] = [endLocation, startLocation];
         waypoints.reverse();
         refreshWaypointMarkers();
@@ -126,26 +111,18 @@ function initMap() {
         calculateRoute();
     });
 
-    // ストリートビュー 開始
     document.getElementById("start-streetview").addEventListener("click", () => {
-        if (route.length === 0) {
-            alert("有効な経路がありません。");
-            return;
-        }
+        if (route.length === 0) { alert("有効な経路がありません。"); return; }
         startStreetView();
     });
 
-    // ストリートビュー 停止
-    document.getElementById("stop-streetview").addEventListener("click", () => {
-        stopStreetView();
+    document.getElementById("stop-streetview").addEventListener("click",   () => stopStreetView());
+    document.getElementById("resume-streetview").addEventListener("click", () => resumeStreetView());
+
+    document.getElementById("random-world-route").addEventListener("click", async () => {
+        await generateRandomWorldRoute();
     });
 
-    // ストリートビュー 再開
-    document.getElementById("resume-streetview").addEventListener("click", () => {
-        resumeStreetView();
-    });
-
-    // 初期表示
     updateRouteInfo();
     updateButtonStates();
 }
@@ -171,47 +148,43 @@ function refreshWaypointMarkers() {
     waypointMarkers.forEach((m) => m.setMap(null));
     waypointMarkers = [];
     waypoints.forEach((w, i) => {
-        const m = new google.maps.Marker({
-            position: w.location,
-            map,
-            label: `${i + 1}`,
-        });
-        waypointMarkers.push(m);
+        waypointMarkers.push(new google.maps.Marker({
+            position: w.location, map, label: `${i + 1}`
+        }));
     });
 }
 
 // =============================================
-//  ボタンの有効・無効管理
+//  ボタン状態管理
 // =============================================
 function updateButtonStates() {
-    const hasRoute = startLocation && endLocation;
-    document.getElementById("search-route").disabled = !hasRoute;
-    document.getElementById("swap-locations").disabled = !hasRoute;
+    const hasEnds = !!(startLocation && endLocation);
+    document.getElementById("search-route").disabled    = !hasEnds;
+    document.getElementById("swap-locations").disabled  = !hasEnds;
     document.getElementById("start-streetview").disabled = route.length === 0;
 }
 
 // =============================================
-//  住所逆引き（緯度経度 → 住所文字列）
+//  住所逆引き
 // =============================================
 function reverseGeocodeLatLng(latLng) {
     return new Promise((resolve) => {
         if (!geocoder) return resolve(null);
         geocoder.geocode({ location: latLng }, (results, status) => {
-            if (status !== "OK" || !results || results.length === 0) return resolve(null);
-            resolve(results[0].formatted_address);
+            resolve(status === "OK" && results.length > 0 ? results[0].formatted_address : null);
         });
     });
 }
 
 // =============================================
-//  ルート情報パネルの更新
+//  ルート情報パネル更新
 // =============================================
 async function updateRouteInfo() {
     const startEl = document.getElementById("start-view");
-    const endEl = document.getElementById("end-view");
+    const endEl   = document.getElementById("end-view");
 
     if (startEl) startEl.textContent = startLocation ? "取得中…" : "未設定";
-    if (endEl) endEl.textContent = endLocation ? "取得中…" : "未設定";
+    if (endEl)   endEl.textContent   = endLocation   ? "取得中…" : "未設定";
 
     if (startLocation && startEl) {
         const addr = await reverseGeocodeLatLng(startLocation);
@@ -222,7 +195,7 @@ async function updateRouteInfo() {
         endEl.textContent = addr || `${endLocation.lat().toFixed(6)}, ${endLocation.lng().toFixed(6)}`;
     }
 
-    const listEl = document.getElementById("waypoints-view");
+    const listEl  = document.getElementById("waypoints-view");
     const emptyEl = document.getElementById("waypoints-empty");
     if (!listEl) return;
 
@@ -232,22 +205,22 @@ async function updateRouteInfo() {
     if (!hasWp) return;
 
     for (let i = 0; i < waypoints.length; i++) {
-        const w = waypoints[i];
-        const addr = await reverseGeocodeLatLng(w.location);
-        const label = addr || `${w.location.lat().toFixed(6)}, ${w.location.lng().toFixed(6)}`;
+        const addr  = await reverseGeocodeLatLng(waypoints[i].location);
+        const label = addr || `${waypoints[i].location.lat().toFixed(6)}, ${waypoints[i].location.lng().toFixed(6)}`;
 
-        const li = document.createElement("li");
+        const li   = document.createElement("li");
         li.style.cssText = "display:flex; align-items:center; gap:8px; margin-bottom:6px;";
 
         const text = document.createElement("div");
         text.style.flex = "1";
-        text.innerHTML = `<strong>${i + 1}.</strong> ${label}`;
+        text.innerHTML  = `<strong>${i + 1}.</strong> ${label}`;
 
-        const btnUp = createWaypointButton("↑", i === 0, () => moveWaypoint(i, i - 1));
-        const btnDown = createWaypointButton("↓", i === waypoints.length - 1, () => moveWaypoint(i, i + 1));
-        const btnDel = createWaypointButton("×", false, () => deleteWaypoint(i));
-
-        li.append(text, btnUp, btnDown, btnDel);
+        li.append(
+            text,
+            createWaypointButton("↑", i === 0,                    () => moveWaypoint(i, i - 1)),
+            createWaypointButton("↓", i === waypoints.length - 1, () => moveWaypoint(i, i + 1)),
+            createWaypointButton("×", false,                       () => deleteWaypoint(i))
+        );
         listEl.appendChild(li);
     }
 }
@@ -255,16 +228,15 @@ async function updateRouteInfo() {
 function createWaypointButton(label, disabled, onClick) {
     const btn = document.createElement("button");
     btn.textContent = label;
-    btn.disabled = disabled;
+    btn.disabled    = disabled;
     btn.addEventListener("click", onClick);
     return btn;
 }
 
 // =============================================
-//  経由地の操作
+//  経由地操作
 // =============================================
 function deleteWaypoint(index) {
-    if (index < 0 || index >= waypoints.length) return;
     waypoints.splice(index, 1);
     refreshWaypointMarkers();
     updateRouteInfo();
@@ -281,6 +253,130 @@ function moveWaypoint(from, to) {
 }
 
 // =============================================
+//  Street View パノラマ取得
+// =============================================
+function getPanoramaAtPosition(latLng, radius) {
+    return new Promise((resolve) => {
+        const sv = new google.maps.StreetViewService();
+        sv.getPanorama(
+            { location: latLng, radius, source: google.maps.StreetViewSource.OUTDOOR },
+            (data, status) => resolve(status === google.maps.StreetViewStatus.OK ? data : null)
+        );
+    });
+}
+
+// =============================================
+//  世界ランダム経路
+// =============================================
+
+/**
+ * Street Viewカバレッジが比較的高い地域の緯度経度範囲。
+ * 完全ランダムより大幅に成功率が上がる。
+ */
+const SV_REGIONS = [
+    { latMin:  24, latMax:  46, lngMin: 123, lngMax: 146 }, // 日本
+    { latMin:  25, latMax:  50, lngMin: -125, lngMax: -65 }, // 北米
+    { latMin:  35, latMax:  71, lngMin:  -10, lngMax:  40 }, // ヨーロッパ
+    { latMin: -35, latMax:  -5, lngMin:  115, lngMax: 154 }, // オーストラリア
+    { latMin: -35, latMax:   5, lngMin:  -75, lngMax: -34 }, // 南米
+    { latMin:  -5, latMax:  37, lngMin:  -18, lngMax:  52 }, // アフリカ
+    { latMin:  -5, latMax:  55, lngMin:   60, lngMax: 120 }, // アジア
+];
+
+function getRandomWorldPoint() {
+    const region = SV_REGIONS[Math.floor(Math.random() * SV_REGIONS.length)];
+    const lat = region.latMin + Math.random() * (region.latMax - region.latMin);
+    const lng = region.lngMin + Math.random() * (region.lngMax - region.lngMin);
+    return new google.maps.LatLng(lat, lng);
+}
+
+function getRandomNearbyPoint(center, maxRadiusMeters) {
+    const heading  = Math.random() * 360;
+    const distance = (0.3 + Math.random() * 0.7) * maxRadiusMeters; // 近すぎる終点を避ける
+    return google.maps.geometry.spherical.computeOffset(center, distance, heading);
+}
+
+function getRouteDistanceMeters(response) {
+    return response.routes[0].legs.reduce((sum, leg) => sum + leg.distance.value, 0);
+}
+
+async function generateRandomWorldRoute() {
+    const minMeters = RANDOM_ROUTE_MIN_KM * 1000;
+    const maxMeters = RANDOM_ROUTE_MAX_KM * 1000;
+
+    const btn = document.getElementById("random-world-route");
+    if (btn) { btn.disabled = true; btn.textContent = "検索中…"; }
+
+    try {
+        for (let i = 0; i < RANDOM_ROUTE_MAX_TRIES; i++) {
+
+            // 1) Street Viewカバレッジが高い地域からランダム起点
+            const randomStart = getRandomWorldPoint();
+
+            // 2) 起点のStreet Viewスナップ（広めの半径で）
+            const startPano = await getPanoramaAtPosition(randomStart, RANDOM_SV_RADIUS_M);
+            if (!startPano?.location?.latLng) continue;
+            const snappedStart = startPano.location.latLng;
+
+            // 3) 終点候補（近すぎず遠すぎない距離でランダム）
+            const randomEnd = getRandomNearbyPoint(snappedStart, RANDOM_END_RADIUS_M);
+
+            // 4) 終点のStreet Viewスナップ
+            const endPano = await getPanoramaAtPosition(randomEnd, RANDOM_SV_RADIUS_M);
+            if (!endPano?.location?.latLng) continue;
+            const snappedEnd = endPano.location.latLng;
+
+            // 5) ルート検索（DRIVING → 失敗時は WALKING も試みる）
+            let response = await requestRoute(snappedStart, snappedEnd, google.maps.TravelMode.DRIVING);
+            if (!response) {
+                response = await requestRoute(snappedStart, snappedEnd, google.maps.TravelMode.WALKING);
+            }
+            if (!response) continue;
+
+            // 6) 距離チェック
+            const totalDistance = getRouteDistanceMeters(response);
+            if (totalDistance < minMeters || totalDistance > maxMeters) continue;
+
+            // 7) 採用
+            stopStreetView();
+            startLocation = snappedStart;
+            endLocation   = snappedEnd;
+            waypoints     = [];
+            refreshWaypointMarkers();
+
+            directionsRenderer.setDirections(response);
+            route = extractRouteCoordinates(response);
+
+            map.setCenter(snappedStart);
+            map.setZoom(13);
+            createMarker(snappedStart);
+
+            updateRouteInfo();
+            updateButtonStates();
+
+            const km = (totalDistance / 1000).toFixed(1);
+            alert(`世界ランダムルートを設定しました！\n距離: ${km} km\n（試行 ${i + 1} 回目）`);
+            return;
+        }
+
+        alert("条件に合うルートが見つかりませんでした。\nもう一度お試しください。");
+
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = "世界ランダム"; }
+    }
+}
+
+/** Directions API をPromiseでラップ */
+function requestRoute(origin, destination, travelMode) {
+    return new Promise((resolve) => {
+        directionsService.route(
+            { origin, destination, travelMode },
+            (result, status) => resolve(status === google.maps.DirectionsStatus.OK ? result : null)
+        );
+    });
+}
+
+// =============================================
 //  経路検索
 // =============================================
 function calculateRoute() {
@@ -288,7 +384,7 @@ function calculateRoute() {
         {
             origin: startLocation,
             destination: endLocation,
-            waypoints: waypoints,
+            waypoints,
             optimizeWaypoints: false,
             travelMode: google.maps.TravelMode.DRIVING,
         },
@@ -308,10 +404,8 @@ function extractRouteCoordinates(response) {
     const points = [];
     response.routes[0].legs.forEach((leg) => {
         leg.steps.forEach((step) => {
-            step.path.forEach((pathPoint, index) => {
-                if (index % ROUTE_SAMPLE_RATE === 0) {
-                    points.push(pathPoint);
-                }
+            step.path.forEach((pt, idx) => {
+                if (idx % ROUTE_SAMPLE_RATE === 0) points.push(pt);
             });
         });
     });
@@ -329,10 +423,7 @@ function startStreetView() {
 }
 
 function stopStreetView() {
-    if (moveInterval) {
-        clearInterval(moveInterval);
-        moveInterval = null;
-    }
+    if (moveInterval) { clearInterval(moveInterval); moveInterval = null; }
     isStreetViewRunning = false;
 }
 
@@ -343,29 +434,18 @@ function resumeStreetView() {
 }
 
 function runStreetViewLoop() {
-    if (moveInterval) {
-        clearInterval(moveInterval);
-        moveInterval = null;
-    }
+    if (moveInterval) { clearInterval(moveInterval); moveInterval = null; }
 
     moveInterval = setInterval(() => {
-        if (!isStreetViewRunning) {
-            stopStreetView();
-            return;
-        }
-        if (currentIndex >= route.length) {
-            stopStreetView();
-            alert("到着しました！");
-            return;
-        }
+        if (!isStreetViewRunning) { stopStreetView(); return; }
+        if (currentIndex >= route.length) { stopStreetView(); alert("到着しました！"); return; }
 
         const position = route[currentIndex];
         panorama.setPosition(position);
         map.setCenter(position);
 
-        const lookAheadIndex = Math.min(currentIndex + LOOKAHEAD_POINTS, route.length - 1);
-        const nextPos = route[lookAheadIndex];
-        if (nextPos) setPovTowardNextPoint(position, nextPos);
+        const nextIdx = Math.min(currentIndex + LOOKAHEAD_POINTS, route.length - 1);
+        if (route[nextIdx]) setPovTowardNextPoint(position, route[nextIdx]);
 
         currentIndex++;
     }, INTERVAL_MS);
@@ -373,10 +453,9 @@ function runStreetViewLoop() {
 
 function setPovTowardNextPoint(currentPos, nextPos) {
     if (!currentPos || !nextPos) return;
-    if (!google.maps.geometry || !google.maps.geometry.spherical) return;
-
+    if (!google.maps.geometry?.spherical) return;
     const heading = google.maps.geometry.spherical.computeHeading(currentPos, nextPos);
-    const pov = panorama.getPov() || { heading: 0, pitch: 0 };
+    const pov     = panorama.getPov() || { heading: 0, pitch: 0 };
     panorama.setPov({ heading, pitch: pov.pitch ?? 0 });
 }
 

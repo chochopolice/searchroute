@@ -4,102 +4,103 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>経路検索アプリ</title>
-
-    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyB_Tmq8Qn3F269Jx1ehDA7xcpWFHTxRoBQ&libraries=places"></script>
-
+    <!-- ★ geometry を追加 -->
+    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyB_Tmq8Qn3F269Jx1ehDA7xcpWFHTxRoBQ&libraries=places,geometry"></script>
     <style>
+        body { font-family: sans-serif; margin: 0; padding: 0; }
+        h1 { margin: 8px 10px; font-size: 1.1rem; }
 
         #controls {
-            margin: 10px;
+            margin: 6px 10px;
         }
         input {
-            margin: 5px;
+            margin: 3px;
             padding: 5px;
-            width: calc(400px - 16px);
-	}
-	button {
-	    font-size: 75%;
+            width: 300px;
+        }
+        button {
+            font-size: 75%;
             margin: 2px;
-            padding: 1px;
-	    background: #cbe8fa;
-	}
+            padding: 3px 6px;
+            background: #cbe8fa;
+            cursor: pointer;
+        }
+        button:disabled {
+            opacity: 0.4;
+            cursor: default;
+        }
 
-       #route-info {
-            margin: 10px;
-            font-size: 75%
-       }
-
-        #current-location {
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            background: rgba(255, 255, 255, 0.8);
-            padding: 10px;
-            border-radius: 5px;
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
-            font-size: 14px;
-            z-index: 1000;
+        /* ★ route-info は container の外に1か所だけ */
+        #route-info {
+            margin: 6px 10px;
+            padding: 8px;
+            border: 1px solid #ccc;
+            font-size: 75%;
+        }
+        #waypoints-view {
+            list-style: none;
+            margin: 2px 0 0 0;
+            padding: 0;
+        }
+        #waypoints-empty {
+            color: #888;
         }
 
         #container {
             position: relative;
             width: 100%;
-            height: 600px; /* 全体の高さを調整 */
+            height: 600px;
         }
-
-        #map { /* マップ画面の割合 */
-            width: 40%; /* 画面を左右に分割 */
+        #map {
+            width: 40%;
             height: 100%;
             float: left;
         }
-
-        #street-view { /* ストリートビュー画面の割合 */
-            width: 60%; /* 画面を左右に分割 */
+        #street-view {
+            width: 60%;
             height: 100%;
             float: left;
         }
-
     </style>
 </head>
 <body>
     <h1>経路検索アプリ</h1>
+
     <div id="controls">
         <input id="location-input" type="text" placeholder="地点を検索">
         <button id="search-location">検索</button>
-<br>
+        <!-- ★ id を JS と一致させる -->
+        <button id="random-world-route">世界ランダム</button>
+        <br>
         <button id="set-start">起点に設定</button>
         <button id="add-waypoint">経由地に追加</button>
         <button id="set-end">終点に設定</button>
         <button id="search-route" disabled>経路を検索</button>
         <button id="start-streetview" disabled>ストリートビュー開始</button>
-<br>
+        <br>
         <button id="clear-waypoints">経由地クリア</button>
-	<button id="swap-locations"disabled>起点と終点を入れ替え</button>
+        <button id="swap-locations" disabled>起点と終点を入れ替え</button>
         <button id="stop-streetview">ストリートビュー停止</button>
         <button id="resume-streetview">ストリートビュー再開</button>
     </div>
 
-    <div id="route-info" style="margin-top:10px; padding:8px; border:1px solid #ccc;">
-        <div><strong>起点：</strong>
-           <span id="start-view">未設定</span>
+    <!-- ★ route-info は container の外に1か所だけ -->
+    <div id="route-info">
+        <div><strong>起点：</strong><span id="start-view">未設定</span></div>
+        <div>
+            <strong>経由地：</strong>
+            <span id="waypoints-empty">なし</span>
+            <ul id="waypoints-view"></ul>
         </div>
-        <div><strong>経由地：</strong>
-            <span id="waypoints-view"></span>
-        </div>
-        <div><strong>終点：</strong>
-           <span id="end-view">未設定</span>
-        </div>
-   </div>
-
-
-
-    <div id="container">
-       <div id="map"></div>
-       <div id="street-view"></div>
-       <div id="waypoints-view"></div>
-       <div id="route-info"></div>
-       <div id="current-location"></div>
+        <div><strong>終点：</strong><span id="end-view">未設定</span></div>
     </div>
+
+    <!-- ★ container 内の重複 div を削除 -->
+    <div id="container">
+        <div id="map"></div>
+        <div id="street-view"></div>
+    </div>
+
     <script src="app.js"></script>
 </body>
 </html>
