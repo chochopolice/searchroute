@@ -272,6 +272,55 @@
             flex: 1;
             width: 100%;
             border-top: 2px solid var(--border);
+            position: relative;
+            cursor: pointer;
+        }
+
+        #sv-tap-overlay {
+            position: absolute;
+            inset: 0;
+            z-index: 10;
+            display: none; /* JS側でストリートビュー開始後に block にする */
+            align-items: center;
+            justify-content: center;
+        }
+
+        #sv-tap-overlay.paused {
+            background: rgba(0,0,0,0.45);
+            backdrop-filter: blur(2px);
+            display: flex;
+        }
+
+        .sv-tap-hint {
+            position: absolute;
+            bottom: 14px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(10,14,26,0.75);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 5px 14px;
+            font-size: 0.7rem;
+            color: var(--primary);
+            pointer-events: none;
+            white-space: nowrap;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        #street-view:hover .sv-tap-hint {
+            opacity: 1;
+        }
+
+        .sv-pause-icon {
+            font-size: 3.5rem;
+            filter: drop-shadow(0 0 16px rgba(0,212,255,0.8));
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.1); opacity: 0.7; }
         }
 
         /* ===== CURRENT LOCATION OVERLAY ===== */
@@ -474,6 +523,57 @@
     </div>
 
     <script src="app.js"></script>
+    <script>
+    // ストリートビューのタップ停止・再開トグル
+    (function () {
+        const svWrap   = document.getElementById('street-view');
+        const overlay  = document.getElementById('sv-tap-overlay');
+        const stopBtn  = document.getElementById('stop-streetview');
+        const resumeBtn = document.getElementById('resume-streetview');
+        const startBtn  = document.getElementById('start-streetview');
+
+        let svActive = false; // ストリートビューが起動中か
+
+        // ストリートビュー開始ボタンが押されたらオーバーレイを有効化
+        startBtn.addEventListener('click', () => {
+            svActive = true;
+            // タップヒントを表示状態にする（非paused時はhoverで出る）
+            overlay.style.display = 'none'; // 再開始時はpausedを解除
+            overlay.classList.remove('paused');
+        });
+
+        // タップ（クリック）でトグル
+        svWrap.addEventListener('click', () => {
+            if (!svActive) return;
+
+            if (overlay.classList.contains('paused')) {
+                // 再開
+                overlay.classList.remove('paused');
+                overlay.style.display = 'none';
+                resumeBtn.click(); // 既存のJS処理を呼ぶ
+            } else {
+                // 停止
+                overlay.style.display = 'flex';
+                // 少し待ってからpaused追加（transition用）
+                requestAnimationFrame(() => overlay.classList.add('paused'));
+                stopBtn.click(); // 既存のJS処理を呼ぶ
+            }
+        });
+
+        // 既存の停止ボタンが押されたときもオーバーレイを同期
+        stopBtn.addEventListener('click', () => {
+            if (!svActive) return;
+            overlay.style.display = 'flex';
+            requestAnimationFrame(() => overlay.classList.add('paused'));
+        });
+
+        // 既存の再開ボタンが押されたときもオーバーレイを同期
+        resumeBtn.addEventListener('click', () => {
+            overlay.classList.remove('paused');
+            overlay.style.display = 'none';
+        });
+    })();
+    </script>
 
     <!-- MANUAL -->
     <div class="section-divider"><span>HOW TO USE</span></div>
