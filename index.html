@@ -211,27 +211,30 @@
             border-radius: 14px;
             padding: 14px 16px;
             font-size: 0.78rem;
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
         }
 
         .info-block {
             background: var(--card2);
             border-radius: 8px;
-            padding: 10px 12px;
+            padding: 9px 12px;
             border-left: 3px solid var(--border);
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
         }
-        .info-block.start { border-left-color: #00ff88; }
+        .info-block.start   { border-left-color: #00ff88; }
         .info-block.waypoint { border-left-color: var(--primary); }
-        .info-block.end { border-left-color: var(--accent); }
+        .info-block.end     { border-left-color: var(--accent); }
 
         .info-label {
             font-size: 0.65rem;
             color: var(--muted);
-            text-transform: uppercase;
             letter-spacing: 1px;
-            margin-bottom: 4px;
+            white-space: nowrap;
+            flex-shrink: 0;
         }
 
         .info-label .dot {
@@ -240,14 +243,67 @@
             border-radius: 50%;
             margin-right: 5px;
         }
-        .start .dot { background: #00ff88; box-shadow: 0 0 6px #00ff88; }
+        .start .dot   { background: #00ff88; box-shadow: 0 0 6px #00ff88; }
         .waypoint .dot { background: var(--primary); box-shadow: 0 0 6px var(--primary); }
-        .end .dot { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+        .end .dot     { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
 
         .info-value {
             color: var(--text);
             font-size: 0.8rem;
             word-break: break-all;
+            flex: 1;
+        }
+
+        /* 経由地リスト */
+        #waypoints-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .waypoint-item {
+            background: var(--card2);
+            border-radius: 8px;
+            padding: 9px 12px;
+            border-left: 3px solid var(--primary);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .waypoint-item .wp-label {
+            font-size: 0.65rem;
+            color: var(--muted);
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+
+        .waypoint-item .wp-label .dot {
+            display: inline-block;
+            width: 7px; height: 7px;
+            border-radius: 50%;
+            margin-right: 5px;
+            background: var(--primary);
+            box-shadow: 0 0 6px var(--primary);
+        }
+
+        .waypoint-item .wp-value {
+            color: var(--text);
+            font-size: 0.8rem;
+            word-break: break-all;
+            flex: 1;
+        }
+
+        .wp-btns {
+            display: flex;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+
+        .wp-btns button {
+            font-size: 0.65rem;
+            padding: 3px 7px;
+            border-radius: 5px;
         }
 
         /* ===== MAP CONTAINER ===== */
@@ -272,6 +328,55 @@
             flex: 1;
             width: 100%;
             border-top: 2px solid var(--border);
+            position: relative;
+            cursor: pointer;
+        }
+
+        #sv-tap-overlay {
+            position: absolute;
+            inset: 0;
+            z-index: 10;
+            display: none; /* JS側でストリートビュー開始後に block にする */
+            align-items: center;
+            justify-content: center;
+        }
+
+        #sv-tap-overlay.paused {
+            background: rgba(0,0,0,0.45);
+            backdrop-filter: blur(2px);
+            display: flex;
+        }
+
+        .sv-tap-hint {
+            position: absolute;
+            bottom: 14px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(10,14,26,0.75);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 5px 14px;
+            font-size: 0.7rem;
+            color: var(--primary);
+            pointer-events: none;
+            white-space: nowrap;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        #street-view:hover .sv-tap-hint {
+            opacity: 1;
+        }
+
+        .sv-pause-icon {
+            font-size: 3.5rem;
+            filter: drop-shadow(0 0 16px rgba(0,212,255,0.8));
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.1); opacity: 0.7; }
         }
 
         /* ===== CURRENT LOCATION OVERLAY ===== */
@@ -453,16 +558,16 @@
     <!-- ROUTE INFO -->
     <div id="route-info">
         <div class="info-block start">
-            <div class="info-label"><span class="dot"></span>起点</div>
-            <div class="info-value" id="start-view">未設定</div>
+            <span class="info-label"><span class="dot"></span>起点</span>
+            <span class="info-value" id="start-view">未設定</span>
         </div>
-        <div class="info-block waypoint">
-            <div class="info-label"><span class="dot"></span>経由地</div>
-            <div class="info-value" id="waypoints-view">なし</div>
-        </div>
+
+        <!-- 経由地リスト（app.jsが動的に追加） -->
+        <div id="waypoints-list"></div>
+
         <div class="info-block end">
-            <div class="info-label"><span class="dot"></span>終点</div>
-            <div class="info-value" id="end-view">未設定</div>
+            <span class="info-label"><span class="dot"></span>終点</span>
+            <span class="info-value" id="end-view">未設定</span>
         </div>
     </div>
 
@@ -474,6 +579,57 @@
     </div>
 
     <script src="app.js"></script>
+    <script>
+    // ストリートビューのタップ停止・再開トグル
+    (function () {
+        const svWrap   = document.getElementById('street-view');
+        const overlay  = document.getElementById('sv-tap-overlay');
+        const stopBtn  = document.getElementById('stop-streetview');
+        const resumeBtn = document.getElementById('resume-streetview');
+        const startBtn  = document.getElementById('start-streetview');
+
+        let svActive = false; // ストリートビューが起動中か
+
+        // ストリートビュー開始ボタンが押されたらオーバーレイを有効化
+        startBtn.addEventListener('click', () => {
+            svActive = true;
+            // タップヒントを表示状態にする（非paused時はhoverで出る）
+            overlay.style.display = 'none'; // 再開始時はpausedを解除
+            overlay.classList.remove('paused');
+        });
+
+        // タップ（クリック）でトグル
+        svWrap.addEventListener('click', () => {
+            if (!svActive) return;
+
+            if (overlay.classList.contains('paused')) {
+                // 再開
+                overlay.classList.remove('paused');
+                overlay.style.display = 'none';
+                resumeBtn.click(); // 既存のJS処理を呼ぶ
+            } else {
+                // 停止
+                overlay.style.display = 'flex';
+                // 少し待ってからpaused追加（transition用）
+                requestAnimationFrame(() => overlay.classList.add('paused'));
+                stopBtn.click(); // 既存のJS処理を呼ぶ
+            }
+        });
+
+        // 既存の停止ボタンが押されたときもオーバーレイを同期
+        stopBtn.addEventListener('click', () => {
+            if (!svActive) return;
+            overlay.style.display = 'flex';
+            requestAnimationFrame(() => overlay.classList.add('paused'));
+        });
+
+        // 既存の再開ボタンが押されたときもオーバーレイを同期
+        resumeBtn.addEventListener('click', () => {
+            overlay.classList.remove('paused');
+            overlay.style.display = 'none';
+        });
+    })();
+    </script>
 
     <!-- MANUAL -->
     <div class="section-divider"><span>HOW TO USE</span></div>
