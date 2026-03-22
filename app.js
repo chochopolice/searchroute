@@ -235,33 +235,36 @@ async function updateRouteInfo() {
         endEl.textContent = addr || `${endLocation.lat().toFixed(6)}, ${endLocation.lng().toFixed(6)}`;
     }
 
-    const listEl  = document.getElementById("waypoints-view");
-    const emptyEl = document.getElementById("waypoints-empty");
+    // 経由地リストを #waypoints-list に縦並びで描画
+    const listEl = document.getElementById("waypoints-list");
     if (!listEl) return;
-
     listEl.innerHTML = "";
-    const hasWp = waypoints.length > 0;
-    if (emptyEl) emptyEl.style.display = hasWp ? "none" : "block";
-    if (!hasWp) return;
 
     for (let i = 0; i < waypoints.length; i++) {
         const addr  = await reverseGeocodeLatLng(waypoints[i].location);
         const label = addr || `${waypoints[i].location.lat().toFixed(6)}, ${waypoints[i].location.lng().toFixed(6)}`;
 
-        const li   = document.createElement("li");
-        li.style.cssText = "display:flex; align-items:center; gap:8px; margin-bottom:6px;";
+        const item = document.createElement("div");
+        item.className = "waypoint-item";
 
-        const text = document.createElement("div");
-        text.style.flex = "1";
-        text.innerHTML  = `<strong>${i + 1}.</strong> ${label}`;
+        const wpLabel = document.createElement("span");
+        wpLabel.className = "wp-label";
+        wpLabel.innerHTML = `<span class="dot"></span>経由地${i + 1}`;
 
-        li.append(
-            text,
+        const wpValue = document.createElement("span");
+        wpValue.className = "wp-value";
+        wpValue.textContent = label;
+
+        const btns = document.createElement("div");
+        btns.className = "wp-btns";
+        btns.append(
             createWaypointButton("↑", i === 0,                    () => moveWaypoint(i, i - 1)),
             createWaypointButton("↓", i === waypoints.length - 1, () => moveWaypoint(i, i + 1)),
             createWaypointButton("×", false,                       () => deleteWaypoint(i))
         );
-        listEl.appendChild(li);
+
+        item.append(wpLabel, wpValue, btns);
+        listEl.appendChild(item);
     }
 }
 
