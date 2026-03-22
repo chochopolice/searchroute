@@ -43,8 +43,18 @@
             top: 0;
             z-index: 100;
         }
-        .logo { display: flex; align-items: center; gap: 10px; }
-        .logo-icon { font-size: 1.6rem; filter: drop-shadow(0 0 8px var(--primary)); }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .logo-icon {
+            font-size: 1.6rem;
+            filter: drop-shadow(0 0 8px var(--primary));
+        }
+
         .logo h1 {
             font-family: 'Orbitron', monospace;
             font-size: 1rem;
@@ -53,7 +63,11 @@
             letter-spacing: 2px;
             text-shadow: 0 0 15px rgba(0,212,255,0.5);
         }
-        .logo h1 span { color: var(--accent); }
+
+        .logo h1 span {
+            color: var(--accent); 
+        }
+
         .header-link {
             font-size: 0.72rem;
             color: var(--muted);
@@ -63,10 +77,22 @@
             border-radius: 20px;
             transition: all 0.2s;
         }
-        .header-link:hover { color: var(--primary); border-color: var(--primary); background: rgba(0,212,255,0.07); }
+        .header-link:hover {
+            color: var(--primary);
+            border-color: var(--primary);
+            background: rgba(0,212,255,0.07);
+        }
 
-        .manual-link-bar { text-align: right; padding: 6px 24px; font-size: 0.75rem; }
-        .manual-link-bar a { color: var(--muted); text-decoration: none; transition: color 0.2s; }
+        .manual-link-bar {
+            text-align: right;
+            padding: 6px 24px;
+            font-size: 0.75rem;
+        }
+        .manual-link-bar a {
+            color: var(--muted);
+            text-decoration: none;
+            transition: color 0.2s;
+        }
         .manual-link-bar a:hover { color: var(--primary); }
 
         .speed-bar {
@@ -151,7 +177,7 @@
             50% { transform: scale(1.1); opacity: 0.7; }
         }
 
-        /* ===== CONTROLS ===== */
+        /* ===== CONTROLS PANEL ===== */
         #controls {
             background: var(--card);
             border: 1px solid var(--border);
@@ -177,7 +203,6 @@
             font-size: 0.82rem;
             outline: none;
             transition: border-color 0.2s, box-shadow 0.2s;
-            width: 100%;
         }
         input::placeholder { color: var(--muted); }
         input:focus {
@@ -204,51 +229,76 @@
             white-space: nowrap;
         }
 
+        /* Primary style */
         .btn-primary {
             background: linear-gradient(135deg, #0099cc, #00d4ff);
             color: #001020;
             border-color: var(--primary);
             box-shadow: 0 2px 10px rgba(0,212,255,0.3);
         }
-        .btn-primary:hover { box-shadow: 0 4px 18px rgba(0,212,255,0.55); transform: translateY(-1px); }
+        .btn-primary:hover {
+            box-shadow: 0 4px 18px rgba(0,212,255,0.55);
+            transform: translateY(-1px);
+        }
 
+        /* Accent style（終点用：オレンジ） */
         .btn-accent {
             background: linear-gradient(135deg, #cc4400, #ff6a00);
             color: #fff;
             border-color: var(--accent);
             box-shadow: 0 2px 10px rgba(255,106,0,0.3);
         }
-        .btn-accent:hover { box-shadow: 0 4px 18px rgba(255,106,0,0.5); transform: translateY(-1px); }
+        .btn-accent:hover {
+            box-shadow: 0 4px 18px rgba(255,106,0,0.5);
+            transform: translateY(-1px);
+        }
 
+        /* Waypoint style（経由地用：明るいシアン〜ティール） */
         .btn-waypoint {
             background: linear-gradient(135deg, #0099bb, #00c8e8);
             color: #001820;
             border-color: #00c8e8;
             box-shadow: 0 2px 10px rgba(0,200,232,0.3);
         }
-        .btn-waypoint:hover { box-shadow: 0 4px 18px rgba(0,200,232,0.55); transform: translateY(-1px); }
+        .btn-waypoint:hover {
+            box-shadow: 0 4px 18px rgba(0,200,232,0.55);
+            transform: translateY(-1px);
+        }
 
+        /* Route style（経路検索・ストリートビュー用：グリーン） */
         .btn-route {
             background: linear-gradient(135deg, #15803d, #22c55e);
             color: #001a0a;
             border-color: #22c55e;
             box-shadow: 0 2px 10px rgba(34,197,94,0.3);
         }
-        .btn-route:hover { box-shadow: 0 4px 18px rgba(34,197,94,0.55); transform: translateY(-1px); }
+        .btn-route:hover {
+            box-shadow: 0 4px 18px rgba(34,197,94,0.55);
+            transform: translateY(-1px);
+        }
 
+        /* Ghost style */
         .btn-ghost {
             background: transparent;
             color: var(--muted);
             border-color: rgba(120,140,170,0.3);
         }
-        .btn-ghost:hover { color: var(--text); border-color: var(--muted); background: rgba(255,255,255,0.04); }
+        .btn-ghost:hover {
+            color: var(--text);
+            border-color: var(--muted);
+            background: rgba(255,255,255,0.04);
+        }
 
+        /* Danger style */
         .btn-danger {
             background: rgba(200,50,50,0.15);
             color: #ff7070;
             border-color: rgba(200,50,50,0.3);
         }
-        .btn-danger:hover { background: rgba(200,50,50,0.28); border-color: #ff5050; }
+        .btn-danger:hover {
+            background: rgba(200,50,50,0.28);
+            border-color: #ff5050;
+        }
 
         button:disabled {
             opacity: 0.35;
@@ -279,14 +329,17 @@
             gap: 8px;
         }
         .info-block.start   { border-left-color: #00ff88; }
+        .info-block.waypoint { border-left-color: var(--primary); }
         .info-block.end     { border-left-color: var(--accent); }
 
         .info-label {
             font-size: 0.65rem;
             color: var(--muted);
+
             white-space: nowrap;
             flex-shrink: 0;
         }
+
         .info-label .dot {
             display: inline-block;
             width: 7px; height: 7px;
@@ -294,11 +347,22 @@
             margin-right: 5px;
         }
         .start .dot { background: #00ff88; box-shadow: 0 0 6px #00ff88; }
+        .waypoint .dot { background: var(--primary); box-shadow: 0 0 6px var(--primary); }
         .end .dot   { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
 
-        .info-value { color: var(--text); font-size: 0.78rem; word-break: break-all; flex: 1; }
+        .info-value {
+            color: var(--text);
+            font-size: 0.78rem;
+            word-break: break-all;
+            flex: 1;
+        }
 
-        #waypoints-list { display: flex; flex-direction: column; gap: 6px; }
+        /* 経由地リスト */
+        #waypoints-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
 
         .waypoint-item {
             background: var(--card2);
@@ -309,6 +373,7 @@
             align-items: center;
             gap: 8px;
         }
+
         .waypoint-item .wp-label {
             font-size: 0.65rem;
             color: var(--muted);
@@ -323,11 +388,26 @@
             background: var(--primary);
             box-shadow: 0 0 6px var(--primary);
         }
-        .waypoint-item .wp-value { color: var(--text); font-size: 0.78rem; word-break: break-all; flex: 1; }
-        .wp-btns { display: flex; gap: 4px; flex-shrink: 0; }
-        .wp-btns button { font-size: 0.62rem; padding: 3px 6px; border-radius: 5px; }
+        .waypoint-item .wp-value { 
+            color: var(--text);
+            font-size: 0.78rem;
+            word-break: break-all;
+            flex: 1;
+        }
 
-        /* ===== MANUAL ===== */
+        .wp-btns {
+            display: flex;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+
+        .wp-btns button {
+            font-size: 0.62rem;
+            padding: 3px 6px;
+            border-radius: 5px;
+        }
+
+        /* ===== DIVIDER ===== */
         .section-divider {
             display: flex;
             align-items: center;
@@ -342,8 +422,14 @@
             white-space: nowrap;
         }
         .section-divider::before,
-        .section-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+        .section-divider::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: var(--border);
+        }
 
+        /* ===== MANUAL ===== */
         #manual-section {
             margin: 0 24px 20px;
             background: var(--card);
@@ -351,6 +437,7 @@
             border-radius: 14px;
             padding: 20px;
         }
+
         #manual-section h2 {
             font-family: 'Orbitron', monospace;
             font-size: 0.85rem;
@@ -358,7 +445,11 @@
             letter-spacing: 2px;
             margin-bottom: 16px;
         }
-        .manual-block { margin-bottom: 18px; }
+
+        .manual-block {
+            margin-bottom: 18px;
+        }
+
         .manual-block h3 {
             font-size: 0.8rem;
             font-weight: 700;
@@ -367,7 +458,12 @@
             padding-left: 10px;
             border-left: 3px solid var(--accent);
         }
-        .manual-steps { list-style: none; padding: 0; }
+
+        .manual-steps {
+            list-style: none;
+            padding: 0;
+        }
+
         .manual-steps li {
             display: flex;
             align-items: flex-start;
@@ -378,19 +474,32 @@
             border-bottom: 1px solid rgba(255,255,255,0.04);
             line-height: 1.5;
         }
+
         .manual-steps li:last-child { border-bottom: none; }
+
         .step-num {
-            min-width: 22px; height: 22px;
+            min-width: 22px;
+            height: 22px;
             background: linear-gradient(135deg, #0099cc, #00d4ff);
             color: #001020;
             border-radius: 50%;
             font-size: 0.65rem;
             font-weight: 900;
-            display: flex; align-items: center; justify-content: center;
+            display: flex;
+            align-items: center;
+            justify-content: center;
             margin-top: 1px;
         }
 
-        footer { text-align: center; padding: 16px; font-size: 0.7rem; color: var(--muted); border-top: 1px solid var(--border); }
+        /* ===== FOOTER ===== */
+        footer {
+            text-align: center;
+            padding: 16px;
+            font-size: 0.7rem;
+            color: var(--muted);
+            border-top: 1px solid var(--border);
+        }
+
         .contact-link {
             display: inline-block;
             margin-bottom: 12px;
@@ -402,11 +511,15 @@
             border-radius: 20px;
             transition: all 0.2s;
         }
-        .contact-link:hover { background: rgba(0,212,255,0.1); box-shadow: 0 0 12px rgba(0,212,255,0.3); }
+        .contact-link:hover {
+            background: rgba(0,212,255,0.1);
+            box-shadow: 0 0 12px rgba(0,212,255,0.3);
+        }
     </style>
 </head>
 <body oncontextmenu="return false;">
 
+    <!-- HEADER -->
     <header>
         <div class="logo">
             <span class="logo-icon">🗺️</span>
@@ -415,17 +528,22 @@
         <a href="index.html" class="header-link">📱 スマホ版</a>
     </header>
 
-    <div class="manual-link-bar"><a href="#manual">▼ 利用方法を見る</a></div>
+    <div class="manual-link-bar">
+        <a href="#manual">▼ 利用方法を見る</a>
+    </div>
+
     <div class="speed-bar"></div>
 
     <div class="pc-layout">
 
-
+    <!-- ROUTE INFO -->
         <div id="route-info">
             <div class="info-block start">
                 <span class="info-label"><span class="dot"></span>起点</span>
                 <span class="info-value" id="start-view">未設定</span>
             </div>
+            
+        <!-- 経由地リスト（app.jsが動的に追加） -->
             <div id="waypoints-list"></div>
             <div class="info-block end">
                 <span class="info-label"><span class="dot"></span>終点</span>
@@ -433,12 +551,10 @@
             </div>
         </div>
 
-        <!-- 左カラム：操作パネル -->
+    <!-- CONTROLS -->
         <div id="controls">
             <div class="search-row">
                 <input id="location-input" type="text" placeholder="🔍 地点を検索...">
-            </div>
-            <div class="btn-row">
                 <button id="search-location" class="btn-primary">検索</button>
                 <button id="random-world-route" class="btn-accent" style="white-space:nowrap;">🌍 世界ランダム</button>
             </div>
@@ -446,8 +562,6 @@
                 <button id="set-start" class="btn-primary">🟢 起点に設定</button>
                 <button id="add-waypoint" class="btn-waypoint">📍 経由地に追加</button>
                 <button id="set-end" class="btn-primay">🔴 終点に設定</button>
-            </div>
-            <div class="btn-row">
                 <button id="search-route" class="btn-route" disabled>🔍 経路を検索</button>
                 <button id="start-streetview" class="btn-accent" disabled>▶ ストリートビュー開始</button>
             </div>
@@ -474,14 +588,15 @@
 
     <script src="app.js"></script>
 
+    <!-- MANUAL -->
     <div class="section-divider"><span>HOW TO USE</span></div>
-    <div id="manual-section">
+    <div id="manual-section" id="manual">
         <h2 id="manual">📖 利用方法</h2>
         <div class="manual-block">
             <h3>🌍 自動で経路を設定する場合</h3>
             <ul class="manual-steps">
                 <li><span class="step-num">1</span>「世界ランダム」ボタンを押してください。</li>
-                <li><span class="step-num">2</span>選択されたルートでよければ「SV開始」ボタンを押してください。</li>
+                <li><span class="step-num">2</span>選択されたルートでよければ「ストリートビュー開始」ボタンを押してください。</li>
                 <li><span class="step-num">3</span>ストリートビューが開始されます。</li>
             </ul>
         </div>
@@ -493,12 +608,13 @@
                 <li><span class="step-num">3</span>同様にもう一方の地点を設定してください。</li>
                 <li><span class="step-num">4</span>経由地がある場合は「経由地に追加」ボタンで設定してください。</li>
                 <li><span class="step-num">5</span>「経路を検索」ボタンで経路を検索してください。</li>
-                <li><span class="step-num">6</span>「SV開始」ボタンを押してください。</li>
+                <li><span class="step-num">6</span>「ストリートビュー開始」ボタンを押してください。</li>
                 <li><span class="step-num">7</span>ストリートビューが開始されます。</li>
             </ul>
         </div>
     </div>
 
+    <!-- FOOTER -->
     <div style="text-align:center; padding: 16px;">
         <a href="https://ig.me/m/chochoporice" class="contact-link">📩 お問い合わせはこちら</a>
     </div>
