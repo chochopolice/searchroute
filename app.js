@@ -17,22 +17,21 @@ let route = [];
 let isStreetViewRunning = false;
 
 // --- 設定値 ---
-const LOOKAHEAD_POINTS  = 2;      // 進行方向の先読みポイント数
-const INTERVAL_MS       = 3000;   // ストリートビュー移動間隔（ミリ秒）
-const ROUTE_SAMPLE_RATE = 5;      // 経路座標の間引き率
+const LOOKAHEAD_POINTS  = 2;
+const INTERVAL_MS       = 3000;
+const ROUTE_SAMPLE_RATE = 5;
 
-// ランダムルート設定
-const RANDOM_ROUTE_MIN_KM    = 5;      // 最短距離（緩めに）
-const RANDOM_ROUTE_MAX_KM    = 50;     // 最長距離（緩めに）
-const RANDOM_ROUTE_MAX_TRIES = 60;     // 最大試行回数
-const RANDOM_END_RADIUS_M    = 20000;  // 終点候補の探索半径
-const RANDOM_SV_RADIUS_M     = 2000;   // Street View スナップ半径（広めに）
+const RANDOM_ROUTE_MIN_KM    = 5;
+const RANDOM_ROUTE_MAX_KM    = 50;
+const RANDOM_ROUTE_MAX_TRIES = 60;
+const RANDOM_END_RADIUS_M    = 20000;
+const RANDOM_SV_RADIUS_M     = 2000;
 
 // =============================================
 //  初期化
 // =============================================
 function initMap() {
-    const begin = { lat: 35.681236, lng: 139.767125 }; // 東京駅
+    const begin = { lat: 35.681236, lng: 139.767125 };
 
     map = new google.maps.Map(document.getElementById("map"), {
         center: begin,
@@ -50,10 +49,8 @@ function initMap() {
     geocoder = new google.maps.Geocoder();
     map.setStreetView(panorama);
 
-    // マップクリックでマーカーを移動
     map.addListener("click", (event) => createMarker(event.latLng));
 
-    // 検索オートコンプリート
     const autocomplete = new google.maps.places.Autocomplete(
         document.getElementById("location-input")
     );
@@ -123,8 +120,51 @@ function initMap() {
         await generateRandomWorldRoute();
     });
 
+    // =============================================
+    //  ★ ストリートビュー タップで停止・再開
+    // =============================================
+    initStreetViewTapToggle();
+
     updateRouteInfo();
     updateButtonStates();
+}
+
+// =============================================
+//  ★ タップ停止・再開の初期化
+// =============================================
+function initStreetViewTapToggle() {
+    const svWrap    = document.getElementById("street-view");
+    const overlay   = document.getElementById("sv-tap-overlay");
+    if (!svWrap || !overlay) return;
+
+    // ストリートビューエリアをタップ
+    svWrap.addEventListener("click", () => {
+        // 走行中でも停止中でも、SVが一度でも起動されていれば反応
+        if (route.length === 0) return;
+
+        if (isStreetViewRunning) {
+            // 停止
+            stopStreetView();
+            showSvOverlay(true);
+        } else {
+            // 再開
+            resumeStreetView();
+            showSvOverlay(false);
+        }
+    });
+}
+
+// オーバーレイの表示切替
+function showSvOverlay(paused) {
+    const overlay = document.getElementById("sv-tap-overlay");
+    if (!overlay) return;
+    if (paused) {
+        overlay.style.display = "flex";
+        requestAnimationFrame(() => overlay.classList.add("paused"));
+    } else {
+        overlay.classList.remove("paused");
+        overlay.style.display = "none";
+    }
 }
 
 // =============================================
@@ -159,8 +199,8 @@ function refreshWaypointMarkers() {
 // =============================================
 function updateButtonStates() {
     const hasEnds = !!(startLocation && endLocation);
-    document.getElementById("search-route").disabled    = !hasEnds;
-    document.getElementById("swap-locations").disabled  = !hasEnds;
+    document.getElementById("search-route").disabled     = !hasEnds;
+    document.getElementById("swap-locations").disabled   = !hasEnds;
     document.getElementById("start-streetview").disabled = route.length === 0;
 }
 
@@ -268,19 +308,14 @@ function getPanoramaAtPosition(latLng, radius) {
 // =============================================
 //  世界ランダム経路
 // =============================================
-
-/**
- * Street Viewカバレッジが比較的高い地域の緯度経度範囲。
- * 完全ランダムより大幅に成功率が上がる。
- */
 const SV_REGIONS = [
-    { latMin:  24, latMax:  46, lngMin: 123, lngMax: 146 }, // 日本
-    { latMin:  25, latMax:  50, lngMin: -125, lngMax: -65 }, // 北米
-    { latMin:  35, latMax:  71, lngMin:  -10, lngMax:  40 }, // ヨーロッパ
-    { latMin: -35, latMax:  -5, lngMin:  115, lngMax: 154 }, // オーストラリア
-    { latMin: -35, latMax:   5, lngMin:  -75, lngMax: -34 }, // 南米
-    { latMin:  -5, latMax:  37, lngMin:  -18, lngMax:  52 }, // アフリカ
-    { latMin:  -5, latMax:  55, lngMin:   60, lngMax: 120 }, // アジア
+    { latMin:  24, latMax:  46, lngMin: 123, lngMax: 146 },
+    { latMin:  25, latMax:  50, lngMin: -125, lngMax: -65 },
+    { latMin:  35, latMax:  71, lngMin:  -10, lngMax:  40 },
+    { latMin: -35, latMax:  -5, lngMin:  115, lngMax: 154 },
+    { latMin: -35, latMax:   5, lngMin:  -75, lngMax: -34 },
+    { latMin:  -5, latMax:  37, lngMin:  -18, lngMax:  52 },
+    { latMin:  -5, latMax:  55, lngMin:   60, lngMax: 120 },
 ];
 
 function getRandomWorldPoint() {
@@ -292,7 +327,7 @@ function getRandomWorldPoint() {
 
 function getRandomNearbyPoint(center, maxRadiusMeters) {
     const heading  = Math.random() * 360;
-    const distance = (0.3 + Math.random() * 0.7) * maxRadiusMeters; // 近すぎる終点を避ける
+    const distance = (0.3 + Math.random() * 0.7) * maxRadiusMeters;
     return google.maps.geometry.spherical.computeOffset(center, distance, heading);
 }
 
@@ -309,36 +344,29 @@ async function generateRandomWorldRoute() {
 
     try {
         for (let i = 0; i < RANDOM_ROUTE_MAX_TRIES; i++) {
-
-            // 1) Street Viewカバレッジが高い地域からランダム起点
             const randomStart = getRandomWorldPoint();
 
-            // 2) 起点のStreet Viewスナップ（広めの半径で）
             const startPano = await getPanoramaAtPosition(randomStart, RANDOM_SV_RADIUS_M);
             if (!startPano?.location?.latLng) continue;
             const snappedStart = startPano.location.latLng;
 
-            // 3) 終点候補（近すぎず遠すぎない距離でランダム）
             const randomEnd = getRandomNearbyPoint(snappedStart, RANDOM_END_RADIUS_M);
 
-            // 4) 終点のStreet Viewスナップ
             const endPano = await getPanoramaAtPosition(randomEnd, RANDOM_SV_RADIUS_M);
             if (!endPano?.location?.latLng) continue;
             const snappedEnd = endPano.location.latLng;
 
-            // 5) ルート検索（DRIVING → 失敗時は WALKING も試みる）
             let response = await requestRoute(snappedStart, snappedEnd, google.maps.TravelMode.DRIVING);
             if (!response) {
                 response = await requestRoute(snappedStart, snappedEnd, google.maps.TravelMode.WALKING);
             }
             if (!response) continue;
 
-            // 6) 距離チェック
             const totalDistance = getRouteDistanceMeters(response);
             if (totalDistance < minMeters || totalDistance > maxMeters) continue;
 
-            // 7) 採用
             stopStreetView();
+            showSvOverlay(false); // ★ ランダムルート設定時にオーバーレイをリセット
             startLocation = snappedStart;
             endLocation   = snappedEnd;
             waypoints     = [];
@@ -366,7 +394,6 @@ async function generateRandomWorldRoute() {
     }
 }
 
-/** Directions API をPromiseでラップ */
 function requestRoute(origin, destination, travelMode) {
     return new Promise((resolve) => {
         directionsService.route(
@@ -417,6 +444,7 @@ function extractRouteCoordinates(response) {
 // =============================================
 function startStreetView() {
     stopStreetView();
+    showSvOverlay(false); // ★ 開始時にオーバーレイをリセット
     currentIndex = 0;
     isStreetViewRunning = true;
     runStreetViewLoop();
@@ -425,10 +453,13 @@ function startStreetView() {
 function stopStreetView() {
     if (moveInterval) { clearInterval(moveInterval); moveInterval = null; }
     isStreetViewRunning = false;
+    // ★ ボタンからの停止時もオーバーレイ同期
+    showSvOverlay(route.length > 0 && currentIndex > 0);
 }
 
 function resumeStreetView() {
     if (isStreetViewRunning) return;
+    showSvOverlay(false); // ★ 再開時にオーバーレイを消す
     isStreetViewRunning = true;
     runStreetViewLoop();
 }
@@ -438,7 +469,12 @@ function runStreetViewLoop() {
 
     moveInterval = setInterval(() => {
         if (!isStreetViewRunning) { stopStreetView(); return; }
-        if (currentIndex >= route.length) { stopStreetView(); alert("到着しました！"); return; }
+        if (currentIndex >= route.length) {
+            stopStreetView();
+            showSvOverlay(false); // 到着時はオーバーレイ不要
+            alert("到着しました！");
+            return;
+        }
 
         const position = route[currentIndex];
         panorama.setPosition(position);
