@@ -123,6 +123,7 @@ function initMap() {
     // =============================================
     //  ★ 現在地取得
     // =============================================
+const locationButton   = document.getElementById('locationButton');
 
 function getCurrentLocation() {
   messageEl.textContent = '';
@@ -152,6 +153,7 @@ function getCurrentLocation() {
   );
 }
 
+locationButton.addEventListener('click', getCurrentLocation);
     
     // =============================================
     //  ★ ストリートビュー タップで停止・再開
