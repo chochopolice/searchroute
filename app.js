@@ -120,37 +120,35 @@ function initMap() {
         await generateRandomWorldRoute();
     });
 
-    // =============================================
-    //  ★ 現在地取得
-    // =============================================
-const locationButton   = document.getElementById('locationButton');
+// =============================================
+//  ★ 現在地取得
+// =============================================
+const locationButton = document.getElementById('locationButton');
 
 function getCurrentLocation() {
-  messageEl.textContent = '';
-  if (!navigator.geolocation) {
-    messageEl.textContent = 'このブラウザでは位置情報が使えません。';
-    return;
-  }
-  locationButton.disabled = true;
-  locationButton.textContent = '取得中...';
-  navigator.geolocation.getCurrentPosition(
-    pos => {
-      updateUserLocation(
-        pos.coords.latitude, pos.coords.longitude,
-        '現在地を取得しました', false    // 青パルスアイコン
-      );
-      addressInput.value = '';
-      searchItems();
-      locationButton.disabled = false;
-      locationButton.textContent = '現在地取得';
-    },
-    () => {
-      messageEl.textContent = '位置情報の取得に失敗しました。ブラウザの許可設定を確認してください。';
-      locationButton.disabled = false;
-      locationButton.textContent = '現在地取得';
-    },
-    { enableHighAccuracy: true, timeout: 8000 }
-  );
+    if (!navigator.geolocation) {
+        alert('このブラウザでは位置情報が使えません。');
+        return;
+    }
+    locationButton.disabled = true;
+    locationButton.textContent = '取得中...';
+
+    navigator.geolocation.getCurrentPosition(
+        pos => {
+            const latLng = new google.maps.LatLng(pos.coords.latitude, pos.coords.longitude);
+            map.setCenter(latLng);
+            map.setZoom(16);
+            createMarker(latLng);
+            locationButton.disabled = false;
+            locationButton.textContent = '現在地取得';
+        },
+        () => {
+            alert('位置情報の取得に失敗しました。ブラウザの許可設定を確認してください。');
+            locationButton.disabled = false;
+            locationButton.textContent = '現在地取得';
+        },
+        { enableHighAccuracy: true, timeout: 8000 }
+    );
 }
 
 locationButton.addEventListener('click', getCurrentLocation);
