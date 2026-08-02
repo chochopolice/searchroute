@@ -38,6 +38,27 @@ const RANDOM_END_RADIUS_M    = 20000;
 const RANDOM_SV_RADIUS_M     = 2000;
 
 // =============================================
+//  JSエラーの画面表示(サイレントな停止を可視化)
+// =============================================
+window.addEventListener("error", (e) => {
+    try {
+        if (!document.body) return;
+        let bar = document.getElementById("sv-jserror");
+        if (!bar) {
+            bar = document.createElement("div");
+            bar.id = "sv-jserror";
+            bar.style.cssText =
+                "position:fixed;top:0;left:0;right:0;z-index:9999;" +
+                "background:#7f1d1d;color:#fff;font-size:12px;" +
+                "padding:8px 12px;font-family:monospace;white-space:pre-wrap;";
+            document.body.appendChild(bar);
+        }
+        const file = (e.filename || "").split("/").pop();
+        bar.textContent = `⚠ JSエラー: ${e.message} (${file}:${e.lineno})`;
+    } catch (_) { /* noop */ }
+});
+
+// =============================================
 //  初期化
 // =============================================
 function initMap() {
