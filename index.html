@@ -598,62 +598,13 @@
     <!-- MAP -->
     <div id="container">
         <div id="map"></div>
-        <div id="street-view"></div>
+        <div id="street-view">
+            <span class="sv-tap-hint">タップで再生 / 停止・ドラッグで見回し</span>
+        </div>
         <div id="current-location"></div>
     </div>
 
     <script src="app.js"></script>
-    <script>
-    // ストリートビューのタップ停止・再開トグル
-    (function () {
-        const svWrap   = document.getElementById('street-view');
-        const overlay  = document.getElementById('sv-tap-overlay');
-        const stopBtn  = document.getElementById('stop-streetview');
-        const resumeBtn = document.getElementById('resume-streetview');
-        const startBtn  = document.getElementById('start-streetview');
-
-        let svActive = false; // ストリートビューが起動中か
-
-        // ストリートビュー開始ボタンが押されたらオーバーレイを有効化
-        startBtn.addEventListener('click', () => {
-            svActive = true;
-            // タップヒントを表示状態にする（非paused時はhoverで出る）
-            overlay.style.display = 'none'; // 再開始時はpausedを解除
-            overlay.classList.remove('paused');
-        });
-
-        // タップ（クリック）でトグル
-        svWrap.addEventListener('click', () => {
-            if (!svActive) return;
-
-            if (overlay.classList.contains('paused')) {
-                // 再開
-                overlay.classList.remove('paused');
-                overlay.style.display = 'none';
-                resumeBtn.click(); // 既存のJS処理を呼ぶ
-            } else {
-                // 停止
-                overlay.style.display = 'flex';
-                // 少し待ってからpaused追加（transition用）
-                requestAnimationFrame(() => overlay.classList.add('paused'));
-                stopBtn.click(); // 既存のJS処理を呼ぶ
-            }
-        });
-
-        // 既存の停止ボタンが押されたときもオーバーレイを同期
-        stopBtn.addEventListener('click', () => {
-            if (!svActive) return;
-            overlay.style.display = 'flex';
-            requestAnimationFrame(() => overlay.classList.add('paused'));
-        });
-
-        // 既存の再開ボタンが押されたときもオーバーレイを同期
-        resumeBtn.addEventListener('click', () => {
-            overlay.classList.remove('paused');
-            overlay.style.display = 'none';
-        });
-    })();
-    </script>
 
     <!-- MANUAL -->
     <div class="section-divider"><span>HOW TO USE</span></div>
@@ -680,6 +631,18 @@
                 <li><span class="step-num">5</span>「経路を検索」ボタンで経路を検索してください。</li>
                 <li><span class="step-num">6</span>「ストリートビュー開始」ボタンを押してください。</li>
                 <li><span class="step-num">7</span>ストリートビューが開始されます。</li>
+            </ul>
+        </div>
+
+        <div class="manual-block">
+            <h3>🎬 動画風プレイヤーの操作</h3>
+            <ul class="manual-steps">
+                <li><span class="step-num">1</span>「ストリートビュー開始」を押すと経路を解析し、画面下にプレイヤーバーが表示されます。</li>
+                <li><span class="step-num">2</span>▶ / ⏸ ボタン、画面のタップ、スペースキーで再生・一時停止できます。</li>
+                <li><span class="step-num">3</span>シークバーをドラッグすると経路上の好きな位置へジャンプできます(⏮ / ⏭で1コマ移動)。</li>
+                <li><span class="step-num">4</span>再生速度は 0.5x〜3x から選択できます。</li>
+                <li><span class="step-num">5</span>再生中・一時停止中いつでも、画面をドラッグして視点(PAN)を自由に変えられます。変えた向きは移動後も維持されます。</li>
+                <li><span class="step-num">6</span>⌖ ボタンで視点を進行方向にリセットできます。</li>
             </ul>
         </div>
     </div>

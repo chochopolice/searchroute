@@ -1,5 +1,6 @@
 // =============================================
 //  Google Maps ストリートビュー 散歩アプリ
+//  v2: 動画風プレイヤー(シーク/速度/PANオフセット追従)
 // =============================================
 
 // --- グローバル変数 ---
@@ -11,15 +12,15 @@ let endLocation = null;
 let waypoints = [];
 let waypointMarkers = [];
 let directionsService, directionsRenderer;
-let moveInterval = null;
-let currentIndex = 0;
 let route = [];
-let isStreetViewRunning = false;
 
 // --- 設定値 ---
-const LOOKAHEAD_POINTS  = 2;
-const INTERVAL_MS       = 3000;
-const ROUTE_SAMPLE_RATE = 5;
+const LOOKAHEAD_POINTS  = 2;      // 何ポイント先を向くか
+const BASE_INTERVAL_MS  = 2000;   // 等速(1x)時のフレーム間隔
+const ROUTE_SAMPLE_RATE = 5;      // 経路ポイントの間引き率
+
+const PANO_PREP_MAX         = 400; // これ以下のポイント数ならパノラマ事前解決を行う
+const PANO_PREP_CONCURRENCY = 6;   // パノラマ解決の同時リクエスト数
 
 const RANDOM_ROUTE_MIN_KM    = 5;
 const RANDOM_ROUTE_MAX_KM    = 50;
@@ -40,7 +41,16 @@ function initMap() {
 
     panorama = new google.maps.StreetViewPanorama(
         document.getElementById("street-view"),
-        { position: begin, pov: { heading: 0, pitch: 0 }, zoom: 1 }
+        {
+            position: begin,
+            pov: { heading: 0, pitch: 0 },
+            zoom: 1,
+            // 動画風の見た目のため標準UIを最小化(パン操作は可能なまま)
+            addressControl: false,
+            fullscreenControl: true,
+            motionTracking: false,
+            motionTrackingControl: false,
+        }
     );
 
     directionsService  = new google.maps.DirectionsService();
@@ -110,94 +120,55 @@ function initMap() {
 
     document.getElementById("start-streetview").addEventListener("click", () => {
         if (route.length === 0) { alert("有効な経路がありません。"); return; }
-        startStreetView();
+        SvPlayer.start();
     });
 
-    document.getElementById("stop-streetview").addEventListener("click",   () => stopStreetView());
-    document.getElementById("resume-streetview").addEventListener("click", () => resumeStreetView());
+    // 既存の停止/再開ボタンはプレイヤーの一時停止/再生に接続
+    document.getElementById("stop-streetview").addEventListener("click",   () => SvPlayer.pause());
+    document.getElementById("resume-streetview").addEventListener("click", () => SvPlayer.play());
 
     document.getElementById("random-world-route").addEventListener("click", async () => {
         await generateRandomWorldRoute();
     });
 
-// =============================================
-//  ★ 現在地取得
-// =============================================
-const locationButton = document.getElementById('locationButton');
+    // =============================================
+    //  ★ 現在地取得
+    // =============================================
+    const locationButton = document.getElementById('locationButton');
 
-function getCurrentLocation() {
-    if (!navigator.geolocation) {
-        alert('このブラウザでは位置情報が使えません。');
-        return;
+    function getCurrentLocation() {
+        if (!navigator.geolocation) {
+            alert('このブラウザでは位置情報が使えません。');
+            return;
+        }
+        locationButton.disabled = true;
+        locationButton.textContent = '取得中...';
+
+        navigator.geolocation.getCurrentPosition(
+            pos => {
+                const latLng = new google.maps.LatLng(pos.coords.latitude, pos.coords.longitude);
+                map.setCenter(latLng);
+                map.setZoom(16);
+                createMarker(latLng);
+                locationButton.disabled = false;
+                locationButton.textContent = '現在地取得';
+            },
+            () => {
+                alert('位置情報の取得に失敗しました。ブラウザの許可設定を確認してください。');
+                locationButton.disabled = false;
+                locationButton.textContent = '現在地取得';
+            },
+            { enableHighAccuracy: true, timeout: 8000 }
+        );
     }
-    locationButton.disabled = true;
-    locationButton.textContent = '取得中...';
 
-    navigator.geolocation.getCurrentPosition(
-        pos => {
-            const latLng = new google.maps.LatLng(pos.coords.latitude, pos.coords.longitude);
-            map.setCenter(latLng);
-            map.setZoom(16);
-            createMarker(latLng);
-            locationButton.disabled = false;
-            locationButton.textContent = '現在地取得';
-        },
-        () => {
-            alert('位置情報の取得に失敗しました。ブラウザの許可設定を確認してください。');
-            locationButton.disabled = false;
-            locationButton.textContent = '現在地取得';
-        },
-        { enableHighAccuracy: true, timeout: 8000 }
-    );
-}
+    locationButton.addEventListener('click', getCurrentLocation);
 
-locationButton.addEventListener('click', getCurrentLocation);
-    
-    // =============================================
-    //  ★ ストリートビュー タップで停止・再開
-    // =============================================
-    initStreetViewTapToggle();
+    // ★ プレイヤーUI(シークバー等)を注入して初期化
+    SvPlayer.init();
 
     updateRouteInfo();
     updateButtonStates();
-}
-
-// =============================================
-//  ★ タップ停止・再開の初期化
-// =============================================
-function initStreetViewTapToggle() {
-    const svWrap    = document.getElementById("street-view");
-    const overlay   = document.getElementById("sv-tap-overlay");
-    if (!svWrap || !overlay) return;
-
-    // ストリートビューエリアをタップ
-    svWrap.addEventListener("click", () => {
-        // 走行中でも停止中でも、SVが一度でも起動されていれば反応
-        if (route.length === 0) return;
-
-        if (isStreetViewRunning) {
-            // 停止
-            stopStreetView();
-            showSvOverlay(true);
-        } else {
-            // 再開
-            resumeStreetView();
-            showSvOverlay(false);
-        }
-    });
-}
-
-// オーバーレイの表示切替
-function showSvOverlay(paused) {
-    const overlay = document.getElementById("sv-tap-overlay");
-    if (!overlay) return;
-    if (paused) {
-        overlay.style.display = "flex";
-        requestAnimationFrame(() => overlay.classList.add("paused"));
-    } else {
-        overlay.classList.remove("paused");
-        overlay.style.display = "none";
-    }
 }
 
 // =============================================
@@ -401,8 +372,7 @@ async function generateRandomWorldRoute() {
             const totalDistance = getRouteDistanceMeters(response);
             if (totalDistance < minMeters || totalDistance > maxMeters) continue;
 
-            stopStreetView();
-            showSvOverlay(false); // ★ ランダムルート設定時にオーバーレイをリセット
+            SvPlayer.reset();
             startLocation = snappedStart;
             endLocation   = snappedEnd;
             waypoints     = [];
@@ -410,6 +380,7 @@ async function generateRandomWorldRoute() {
 
             directionsRenderer.setDirections(response);
             route = extractRouteCoordinates(response);
+            SvPlayer.onRouteChanged();
 
             map.setCenter(snappedStart);
             map.setZoom(13);
@@ -426,7 +397,7 @@ async function generateRandomWorldRoute() {
         alert("条件に合うルートが見つかりませんでした。\nもう一度お試しください。");
 
     } finally {
-        if (btn) { btn.disabled = false; btn.textContent = "世界ランダム"; }
+        if (btn) { btn.disabled = false; btn.textContent = "🌍 世界ランダム"; }
     }
 }
 
@@ -455,6 +426,7 @@ function calculateRoute() {
             if (status === google.maps.DirectionsStatus.OK) {
                 directionsRenderer.setDirections(response);
                 route = extractRouteCoordinates(response);
+                SvPlayer.onRouteChanged();
                 updateButtonStates();
             } else {
                 alert("経路情報を取得できませんでした: " + status);
@@ -476,60 +448,535 @@ function extractRouteCoordinates(response) {
 }
 
 // =============================================
-//  ストリートビュー制御
 // =============================================
-function startStreetView() {
-    stopStreetView();
-    showSvOverlay(false); // ★ 開始時にオーバーレイをリセット
-    currentIndex = 0;
-    isStreetViewRunning = true;
-    runStreetViewLoop();
-}
+//  ★★★ 動画風ストリートビュー プレイヤー ★★★
+//
+//  - フレーム列(経路ポイント→パノラマ)を事前計算しシーク可能に
+//  - 再生 / 一時停止 / シークバー / 速度変更
+//  - ユーザーのPAN操作を「進行方向からのオフセット」として保持し、
+//    移動後も向きを維持(視聴中・一時停止中いつでもPAN可能)
+// =============================================
+// =============================================
+const SvPlayer = (() => {
 
-function stopStreetView() {
-    if (moveInterval) { clearInterval(moveInterval); moveInterval = null; }
-    isStreetViewRunning = false;
-    // ★ ボタンからの停止時もオーバーレイ同期
-    showSvOverlay(route.length > 0 && currentIndex > 0);
-}
+    // ---- 状態 ----
+    let frames = [];          // { position: LatLng, panoId: string|null, baseHeading: number }
+    let framesDirty = true;   // routeが変わったら再構築が必要
+    let currentIndex = 0;
+    let playing = false;
+    let timer = null;
+    let speed = 1;            // 再生速度倍率
+    let prepared = false;     // フレーム構築済みか
+    let preparing = false;
+    let prepToken = 0;        // 経路変更時に進行中の解析を破棄するためのトークン
 
-function resumeStreetView() {
-    if (isStreetViewRunning) return;
-    showSvOverlay(false); // ★ 再開時にオーバーレイを消す
-    isStreetViewRunning = true;
-    runStreetViewLoop();
-}
+    // ---- PANオフセット ----
+    let headingOffset = 0;        // 進行方向(baseHeading)からのユーザー視点のズレ
+    let currentBaseHeading = 0;
+    let expectedHeading = null;   // 自分でsetPovした値(pov_changedの自他判定用)
 
-function runStreetViewLoop() {
-    if (moveInterval) { clearInterval(moveInterval); moveInterval = null; }
+    // ---- UI要素 ----
+    let ui = {};
+    let progressMarker = null;    // 地図上の現在位置マーカー
 
-    moveInterval = setInterval(() => {
-        if (!isStreetViewRunning) { stopStreetView(); return; }
-        if (currentIndex >= route.length) {
-            stopStreetView();
-            showSvOverlay(false); // 到着時はオーバーレイ不要
-            alert("到着しました！");
-            return;
+    // =========================================
+    //  初期化(UI注入 + イベント)
+    // =========================================
+    function init() {
+        injectStyles();
+        injectPlayerBar();
+        bindPanoramaEvents();
+        bindTapToggle();
+        bindKeyboard();
+        updateUi();
+    }
+
+    function onRouteChanged() {
+        framesDirty = true;
+        prepared = false;
+        prepToken++;          // 進行中の解析を無効化
+        pause(true);
+        frames = [];          // 旧経路のフレームを破棄(次回startで再構築)
+        currentIndex = 0;
+        headingOffset = 0;
+        updateUi();
+    }
+
+    function reset() {
+        onRouteChanged();
+        if (progressMarker) { progressMarker.setMap(null); progressMarker = null; }
+        setBarVisible(false);
+    }
+
+    // =========================================
+    //  フレーム構築
+    // =========================================
+    function buildRawFrames() {
+        frames = route.map((pt, i) => {
+            const lookIdx = Math.min(i + LOOKAHEAD_POINTS, route.length - 1);
+            const heading = (i >= route.length - 1 && route.length >= 2)
+                ? google.maps.geometry.spherical.computeHeading(route[route.length - 2], pt)
+                : google.maps.geometry.spherical.computeHeading(pt, route[lookIdx]);
+            return { position: pt, panoId: null, baseHeading: heading };
+        });
+    }
+
+    // パノラマIDを事前解決し、連続する同一パノラマを間引く(=カクつき削減 & 正確なシーク)
+    async function prepareFrames() {
+        if (!framesDirty && prepared) return true;
+        if (preparing) return false;
+
+        preparing = true;
+        const myToken = ++prepToken;
+        buildRawFrames();
+
+        if (frames.length === 0) { preparing = false; return false; }
+
+        // ポイント数が多すぎる場合は事前解決をスキップ(生ポイントのまま再生)
+        if (frames.length > PANO_PREP_MAX) {
+            framesDirty = false;
+            prepared = true;
+            preparing = false;
+            return true;
         }
 
-        const position = route[currentIndex];
-        panorama.setPosition(position);
-        map.setCenter(position);
+        setPrepProgress(0);
+        const sv = new google.maps.StreetViewService();
 
-        const nextIdx = Math.min(currentIndex + LOOKAHEAD_POINTS, route.length - 1);
-        if (route[nextIdx]) setPovTowardNextPoint(position, route[nextIdx]);
+        const resolveOne = (frame) => new Promise((resolve) => {
+            sv.getPanorama(
+                { location: frame.position, radius: 60, source: google.maps.StreetViewSource.OUTDOOR },
+                (data, status) => {
+                    if (status === google.maps.StreetViewStatus.OK && data?.location) {
+                        frame.panoId = data.location.pano || null;
+                        if (data.location.latLng) frame.position = data.location.latLng;
+                    }
+                    resolve();
+                }
+            );
+        });
 
+        // 同時実行数を絞ったプール処理
+        let done = 0;
+        let cursor = 0;
+        const workers = Array.from({ length: PANO_PREP_CONCURRENCY }, async () => {
+            while (cursor < frames.length) {
+                if (myToken !== prepToken) return; // 経路が変わったので中断
+                const idx = cursor++;
+                await resolveOne(frames[idx]);
+                done++;
+                if (done % 5 === 0 || done === frames.length) {
+                    setPrepProgress(done / frames.length);
+                }
+            }
+        });
+        await Promise.all(workers);
+
+        if (myToken !== prepToken) { preparing = false; return false; }
+
+        // 連続する同一パノラマを除去(未解決 null は残す)
+        const deduped = [];
+        for (const f of frames) {
+            const prev = deduped[deduped.length - 1];
+            if (prev && prev.panoId && f.panoId && prev.panoId === f.panoId) continue;
+            deduped.push(f);
+        }
+        if (deduped.length >= 2) frames = deduped;
+
+        // 間引き後にbaseHeadingを再計算
+        for (let i = 0; i < frames.length - 1; i++) {
+            const lookIdx = Math.min(i + LOOKAHEAD_POINTS, frames.length - 1);
+            frames[i].baseHeading =
+                google.maps.geometry.spherical.computeHeading(frames[i].position, frames[lookIdx].position);
+        }
+        if (frames.length >= 2) {
+            frames[frames.length - 1].baseHeading =
+                google.maps.geometry.spherical.computeHeading(
+                    frames[frames.length - 2].position, frames[frames.length - 1].position);
+        }
+
+        framesDirty = false;
+        prepared = true;
+        preparing = false;
+        setPrepProgress(null);
+        return true;
+    }
+
+    // =========================================
+    //  再生制御
+    // =========================================
+    async function start() {
+        setBarVisible(true);
+        const ok = await prepareFrames();
+        if (!ok || frames.length === 0) { updateUi(); return; }
+        currentIndex = 0;
+        headingOffset = 0;
+        showFrame(0);
+        play();
+    }
+
+    function play() {
+        if (playing) return;
+        if (frames.length === 0) {
+            // 「再開」ボタンから直接来た場合など、未構築なら構築から
+            if (route.length > 0) { start(); }
+            return;
+        }
+        if (currentIndex >= frames.length - 1) currentIndex = 0; // 終端からは先頭へ
+        playing = true;
+        scheduleTick();
+        flashIcon("▶");
+        updateUi();
+    }
+
+    function pause(silent = false) {
+        if (timer) { clearTimeout(timer); timer = null; }
+        if (playing && !silent) flashIcon("⏸");
+        playing = false;
+        updateUi();
+    }
+
+    function toggle() { playing ? pause() : play(); }
+
+    function scheduleTick() {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(tick, BASE_INTERVAL_MS / speed);
+    }
+
+    function tick() {
+        if (!playing) return;
+        if (currentIndex >= frames.length - 1) {
+            pause(true);
+            flashIcon("🏁");
+            return;
+        }
         currentIndex++;
-    }, INTERVAL_MS);
-}
+        showFrame(currentIndex);
+        scheduleTick();
+    }
 
-function setPovTowardNextPoint(currentPos, nextPos) {
-    if (!currentPos || !nextPos) return;
-    if (!google.maps.geometry?.spherical) return;
-    const heading = google.maps.geometry.spherical.computeHeading(currentPos, nextPos);
-    const pov     = panorama.getPov() || { heading: 0, pitch: 0 };
-    panorama.setPov({ heading, pitch: pov.pitch ?? 0 });
-}
+    function seekTo(index) {
+        if (frames.length === 0) return;
+        currentIndex = Math.max(0, Math.min(index, frames.length - 1));
+        showFrame(currentIndex);
+        if (playing) scheduleTick(); // タイマーを打ち直す
+    }
+
+    function setSpeed(mult) {
+        speed = mult;
+        if (playing) scheduleTick();
+        updateUi();
+    }
+
+    // =========================================
+    //  フレーム表示
+    // =========================================
+    function showFrame(index) {
+        const frame = frames[index];
+        if (!frame) return;
+
+        if (frame.panoId) {
+            panorama.setPano(frame.panoId);
+        } else {
+            panorama.setPosition(frame.position);
+        }
+        map.setCenter(frame.position);
+        updateProgressMarker(frame.position);
+        applyPov(frame.baseHeading);
+        updateUi();
+    }
+
+    // 進行方向 + ユーザーオフセット でPOVを適用
+    function applyPov(baseHeading) {
+        currentBaseHeading = baseHeading;
+        const pov = panorama.getPov() || { heading: 0, pitch: 0 };
+        const heading = ((baseHeading + headingOffset) % 360 + 360) % 360;
+        expectedHeading = heading;
+        panorama.setPov({ heading, pitch: pov.pitch ?? 0 }); // pitchはユーザーの値を維持
+    }
+
+    // ユーザーのPAN操作を検知してオフセットを更新
+    function bindPanoramaEvents() {
+        panorama.addListener("pov_changed", () => {
+            const pov = panorama.getPov();
+            if (pov == null) return;
+            // 自分がsetPovした変更なら無視(非同期発火でも安全な値比較方式)
+            if (expectedHeading !== null && Math.abs(normalizeDeg(pov.heading - expectedHeading)) < 0.01) {
+                return;
+            }
+            // ユーザー操作 → 進行方向からのズレを記録
+            headingOffset = normalizeDeg(pov.heading - currentBaseHeading);
+            updateRecenterButton();
+        });
+
+        // ユーザーが矢印リンクで自力移動した場合もマップを追従
+        panorama.addListener("position_changed", () => {
+            const pos = panorama.getPosition();
+            if (pos) updateProgressMarker(pos);
+        });
+    }
+
+    function recenter() {
+        headingOffset = 0;
+        applyPov(currentBaseHeading);
+        updateRecenterButton();
+    }
+
+    function normalizeDeg(deg) {
+        let d = deg % 360;
+        if (d > 180)  d -= 360;
+        if (d < -180) d += 360;
+        return d;
+    }
+
+    // =========================================
+    //  地図上の現在位置マーカー
+    // =========================================
+    function updateProgressMarker(position) {
+        if (!progressMarker) {
+            progressMarker = new google.maps.Marker({
+                position, map,
+                zIndex: 999,
+                icon: {
+                    path: google.maps.SymbolPath.CIRCLE,
+                    scale: 7,
+                    fillColor: "#00d4ff",
+                    fillOpacity: 1,
+                    strokeColor: "#ffffff",
+                    strokeWeight: 2,
+                },
+            });
+        } else {
+            progressMarker.setPosition(position);
+        }
+    }
+
+    // =========================================
+    //  プレイヤーバー UI
+    // =========================================
+    function injectStyles() {
+        const css = `
+        #sv-player-bar {
+            position: absolute;
+            left: 10px; right: 10px; bottom: 10px;
+            z-index: 20;
+            display: none;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: rgba(10,14,26,0.82);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(0,212,255,0.25);
+            border-radius: 12px;
+            font-family: 'Noto Sans JP', sans-serif;
+        }
+        #sv-player-bar.visible { display: flex; }
+        #sv-player-bar button {
+            background: transparent;
+            border: 1px solid rgba(0,212,255,0.3);
+            color: #00d4ff;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            padding: 4px 9px;
+            cursor: pointer;
+            line-height: 1;
+            transition: all 0.15s;
+            flex-shrink: 0;
+        }
+        #sv-player-bar button:hover { background: rgba(0,212,255,0.12); }
+        #sv-player-bar button:disabled { opacity: 0.35; cursor: not-allowed; }
+        #sv-player-bar button.active { background: rgba(0,212,255,0.25); box-shadow: 0 0 8px rgba(0,212,255,0.4); }
+        #sv-seek {
+            flex: 1;
+            min-width: 60px;
+            accent-color: #00d4ff;
+            cursor: pointer;
+            height: 4px;
+        }
+        #sv-counter {
+            font-size: 0.68rem;
+            color: #7a90b0;
+            white-space: nowrap;
+            min-width: 64px;
+            text-align: center;
+            flex-shrink: 0;
+            font-variant-numeric: tabular-nums;
+        }
+        #sv-speed {
+            background: rgba(26,34,54,0.9);
+            color: #e0eaf8;
+            border: 1px solid rgba(0,212,255,0.3);
+            border-radius: 8px;
+            font-size: 0.72rem;
+            padding: 4px 4px;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+        #sv-flash {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 15;
+            font-size: 3.2rem;
+            pointer-events: none;
+            opacity: 0;
+            filter: drop-shadow(0 0 16px rgba(0,212,255,0.8));
+        }
+        #sv-flash.flash { animation: svFlash 0.7s ease-out forwards; }
+        @keyframes svFlash {
+            0%   { opacity: 0.95; transform: translate(-50%, -50%) scale(0.8); }
+            100% { opacity: 0;    transform: translate(-50%, -50%) scale(1.5); }
+        }
+        /* 旧オーバーレイはPAN操作を妨げるため無効化 */
+        #sv-tap-overlay { pointer-events: none !important; display: none !important; }
+        @media (max-width: 520px) {
+            #sv-player-bar { flex-wrap: wrap; gap: 6px; padding: 7px 9px; }
+            #sv-seek { flex-basis: 100%; order: -1; }
+        }`;
+        const style = document.createElement("style");
+        style.textContent = css;
+        document.head.appendChild(style);
+    }
+
+    function injectPlayerBar() {
+        const svWrap = document.getElementById("street-view");
+        if (!svWrap) return;
+
+        const bar = document.createElement("div");
+        bar.id = "sv-player-bar";
+        bar.innerHTML = `
+            <button id="sv-prev"  title="1つ戻る">⏮</button>
+            <button id="sv-play"  title="再生 / 一時停止">▶</button>
+            <button id="sv-next"  title="1つ進む">⏭</button>
+            <input  id="sv-seek" type="range" min="0" max="0" value="0" step="1">
+            <span   id="sv-counter">- / -</span>
+            <select id="sv-speed" title="再生速度">
+                <option value="0.5">0.5x</option>
+                <option value="1" selected>1x</option>
+                <option value="1.5">1.5x</option>
+                <option value="2">2x</option>
+                <option value="3">3x</option>
+            </select>
+            <button id="sv-recenter" title="進行方向に視点を戻す">⌖</button>
+        `;
+        svWrap.appendChild(bar);
+
+        const flash = document.createElement("div");
+        flash.id = "sv-flash";
+        svWrap.appendChild(flash);
+
+        ui = {
+            bar,
+            flash,
+            play:     bar.querySelector("#sv-play"),
+            prev:     bar.querySelector("#sv-prev"),
+            next:     bar.querySelector("#sv-next"),
+            seek:     bar.querySelector("#sv-seek"),
+            counter:  bar.querySelector("#sv-counter"),
+            speedSel: bar.querySelector("#sv-speed"),
+            recenter: bar.querySelector("#sv-recenter"),
+        };
+
+        // バー内の操作がタップ再生/停止トグルに伝播しないように
+        ["click", "pointerdown", "pointerup", "touchstart"].forEach((ev) =>
+            bar.addEventListener(ev, (e) => e.stopPropagation())
+        );
+
+        ui.play.addEventListener("click", toggle);
+        ui.prev.addEventListener("click", () => seekTo(currentIndex - 1));
+        ui.next.addEventListener("click", () => seekTo(currentIndex + 1));
+        ui.seek.addEventListener("input", () => seekTo(parseInt(ui.seek.value, 10)));
+        ui.speedSel.addEventListener("change", () => setSpeed(parseFloat(ui.speedSel.value)));
+        ui.recenter.addEventListener("click", recenter);
+    }
+
+    function setBarVisible(visible) {
+        if (ui.bar) ui.bar.classList.toggle("visible", visible);
+    }
+
+    function updateUi() {
+        if (!ui.bar) return;
+        const total = frames.length;
+        ui.play.textContent = playing ? "⏸" : "▶";
+        ui.seek.max = Math.max(0, total - 1);
+        ui.seek.value = currentIndex;
+        ui.seek.disabled = total === 0;
+        ui.counter.textContent = total > 0 ? `${currentIndex + 1} / ${total}` : "- / -";
+        ui.prev.disabled = total === 0 || currentIndex <= 0;
+        ui.next.disabled = total === 0 || currentIndex >= total - 1;
+    }
+
+    function updateRecenterButton() {
+        if (!ui.recenter) return;
+        ui.recenter.classList.toggle("active", Math.abs(headingOffset) > 5);
+    }
+
+    function setPrepProgress(ratio) {
+        if (!ui.counter) return;
+        if (ratio === null) { updateUi(); return; }
+        ui.counter.textContent = `解析中 ${Math.round(ratio * 100)}%`;
+    }
+
+    function flashIcon(icon) {
+        if (!ui.flash) return;
+        ui.flash.textContent = icon;
+        ui.flash.classList.remove("flash");
+        void ui.flash.offsetWidth; // reflowでアニメーション再発火
+        ui.flash.classList.add("flash");
+    }
+
+    // =========================================
+    //  タップで再生/一時停止(ドラッグPANとは区別)
+    // =========================================
+    function bindTapToggle() {
+        const svWrap = document.getElementById("street-view");
+        if (!svWrap) return;
+
+        let downX = 0, downY = 0, downT = 0;
+
+        svWrap.addEventListener("pointerdown", (e) => {
+            downX = e.clientX; downY = e.clientY; downT = Date.now();
+        }, true);
+
+        svWrap.addEventListener("pointerup", (e) => {
+            if (frames.length === 0) return;
+            const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
+            const elapsed = Date.now() - downT;
+            // 動かさず短くタップした場合のみトグル(ドラッグ=PAN操作は無視)
+            if (moved < 6 && elapsed < 400) {
+                // プレイヤーバーやGoogle標準UIのクリックは除外
+                if (e.target.closest("#sv-player-bar")) return;
+                if (e.target.closest("button, a, [role='button']")) return;
+                toggle();
+            }
+        }, true);
+    }
+
+    // =========================================
+    //  キーボード操作(スペース / Shift+←→)
+    // =========================================
+    function bindKeyboard() {
+        document.addEventListener("keydown", (e) => {
+            const tag = (e.target.tagName || "").toLowerCase();
+            if (tag === "input" || tag === "textarea" || tag === "select") return;
+            if (frames.length === 0) return;
+
+            if (e.code === "Space") {
+                e.preventDefault();
+                toggle();
+            } else if (e.code === "ArrowRight" && e.shiftKey) {
+                e.preventDefault();
+                seekTo(currentIndex + 1);
+            } else if (e.code === "ArrowLeft" && e.shiftKey) {
+                e.preventDefault();
+                seekTo(currentIndex - 1);
+            }
+        });
+    }
+
+    // ---- 公開API ----
+    return { init, start, play, pause, toggle, seekTo, setSpeed, reset, onRouteChanged };
+})();
 
 // =============================================
 //  エントリーポイント
