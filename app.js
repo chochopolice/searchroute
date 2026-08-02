@@ -5,7 +5,7 @@
 
 // --- グローバル変数 ---
 let geocoder;
-let map;
+let map, panorama;              // panorama は「表示中(アクティブ)」のパノラマを指す
 let marker = null;
 let startLocation = null;
 let endLocation = null;
@@ -53,6 +53,7 @@ function initMap() {
     directionsRenderer = new google.maps.DirectionsRenderer();
     directionsRenderer.setMap(map);
     geocoder = new google.maps.Geocoder();
+    map.setStreetView(panorama);
 
     map.addListener("click", (event) => createMarker(event.latLng));
 
