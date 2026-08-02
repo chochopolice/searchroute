@@ -17,9 +17,9 @@ let route = [];
 // --- 設定値 ---
 const LOOKAHEAD_POINTS  = 2;      // 何ポイント先を向くか
 const BASE_INTERVAL_MS  = 2000;   // 等速(1x)時のフレーム間隔
-const ROUTE_SAMPLE_RATE = 5;      // 経路ポイントの間引き率
+const ROUTE_SAMPLE_RATE = 2;      // 経路ポイントの間引き率(小さいほど高密度=滑らか)
 
-const PANO_PREP_MAX         = 400; // これ以下のポイント数ならパノラマ事前解決を行う
+const PANO_PREP_MAX         = 800; // これ以下のポイント数ならパノラマ解決+重複除去を行う
 const PANO_PREP_CONCURRENCY = 6;   // パノラマ解決の同時リクエスト数
 
 // --- Static API 静止画シーケンス設定 ---
@@ -485,7 +485,7 @@ const SvPlayer = (() => {
     let currentIndex = 0;
     let playing = false;
     let timer = null;
-    let speed = 1;
+    let speed = 1.5;          // 再生速度倍率(デフォルト1.5x)
     let prepared = false;
     let preparing = false;
     let prepToken = 0;        // 経路変更で進行中の解析/読み込みを破棄するトークン
