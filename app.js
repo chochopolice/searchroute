@@ -23,9 +23,10 @@ const PANO_PREP_MAX         = 400; // これ以下のポイント数ならパノ
 const PANO_PREP_CONCURRENCY = 6;   // パノラマ解決の同時リクエスト数
 
 // パノラマプール: 現在のコマ + 先のコマを常に読み込み済みで保持する枚数。
-// WebGLコンテキスト上限(ブラウザで十数個)があるため増やしすぎ注意(推奨 4〜7)
-const POOL_SIZE         = 5;
-const INITIAL_BUFFER_MS = 2500;    // 再生開始前のバッファ(先読み)時間
+// WebGLコンテキスト上限(ブラウザで十数個)があるため増やしすぎ注意(推奨 3〜5)
+const POOL_SIZE         = 4;
+const INITIAL_BUFFER_MS = 3000;    // 再生開始前のバッファ(先読み)時間
+const ASSIGN_SPACING_MS = 300;     // 先読みパノラマの読み込み開始をずらす間隔
 
 const RANDOM_ROUTE_MIN_KM    = 5;
 const RANDOM_ROUTE_MAX_KM    = 50;
@@ -469,6 +470,8 @@ const SvPlayer = (() => {
     // ---- パノラマプール ----
     let pool = [];            // { pano, el, frameIndex } × POOL_SIZE
     let frontMember = null;   // 表示中のプールメンバー
+    let assignQueue = [];     // 先読み割り当ての順次実行キュー
+    let assignTimer = null;
 
     // ---- PANオフセット ----
     let headingOffset = 0;        // 進行方向(baseHeading)からのユーザー視点のズレ
@@ -546,6 +549,8 @@ const SvPlayer = (() => {
         pause(true);
         frames = [];          // 旧経路のフレームを破棄(次回startで再構築)
         pool.forEach((m) => { m.frameIndex = -1; }); // プールの読み込み状態も無効化
+        assignQueue = [];
+        if (assignTimer) { clearTimeout(assignTimer); assignTimer = null; }
         currentIndex = 0;
         headingOffset = 0;
         updateUi();
@@ -747,6 +752,29 @@ const SvPlayer = (() => {
         member.frameIndex = frameIndex;
     }
 
+    // 先読み割り当てをキューに積み、ASSIGN_SPACING_MS間隔で1枚ずつ実行する
+    // (複数パノラマの同時読み込みで後半が読み込まれなくなる問題への対策)
+    function scheduleAssign(member, frameIndex) {
+        assignQueue = assignQueue.filter((q) => q.member !== member); // 古い予約は上書き
+        assignQueue.push({ member, frameIndex });
+        pumpAssignQueue();
+    }
+
+    function pumpAssignQueue() {
+        if (assignTimer) return;
+        const step = () => {
+            assignTimer = null;
+            const job = assignQueue.shift();
+            if (job && job.member !== frontMember) { // 表示中メンバーはshowFrameが直接管理
+                assignMember(job.member, job.frameIndex);
+            }
+            if (assignQueue.length > 0) {
+                assignTimer = setTimeout(step, ASSIGN_SPACING_MS);
+            }
+        };
+        assignTimer = setTimeout(step, 0);
+    }
+
     // 「現在コマ i + 先の POOL_SIZE-1 コマ」がプール内に揃うよう割り当てる。
     // すでに必要なコマを保持しているメンバーはそのまま再利用(読み直しを防ぐ)
     function fillPoolAround(i) {
@@ -763,19 +791,24 @@ const SvPlayer = (() => {
             if (wanted.includes(m.frameIndex)) continue; // 必要なコマを保持中 → 温存
             const idx = missing.shift();
             if (idx === undefined) continue;
-            assignMember(m, idx);
+            scheduleAssign(m, idx); // ★ 一斉ではなく順次読み込み
         }
     }
 
-    // 指定メンバーを最前面に出す(クロスフェード)
+    // 指定メンバーを最前面に出す(旧frontはmidとして直下に残しクロスフェード)
     function bringToFront(member) {
         if (member === frontMember) return;
-        frontMember.el.classList.remove("front");
-        frontMember.el.classList.add("back");
-        member.el.classList.remove("back");
+        const oldFront = frontMember;
+        pool.forEach((m) => m.el.classList.remove("front", "mid", "back"));
         member.el.classList.add("front");
+        oldFront.el.classList.add("mid");
+        pool.forEach((m) => {
+            if (m !== member && m !== oldFront) m.el.classList.add("back");
+        });
         frontMember = member;
         panorama = member.pano; // 外部参照用のグローバルも更新
+        // ★ 裏で描画が止まっていた場合に備えて再描画を強制
+        google.maps.event.trigger(member.pano, "resize");
         map.setStreetView(member.pano);
     }
 
@@ -865,14 +898,21 @@ const SvPlayer = (() => {
     // =========================================
     function injectStyles() {
         const css = `
-        /* ダブルバッファ用パノラマ2枚(表:front / 裏:back) */
+        /* パノラマプール(表:front / 直下:mid / その他:back)
+           ※ 裏のパネルも常に opacity:1 のまま重ねる(透明にすると
+              ブラウザ/APIが描画・読み込みを止めることがあるため) */
         .sv-pane {
             position: absolute;
             inset: 0;
-            transition: opacity 0.25s ease;
+            opacity: 1;
         }
-        .sv-pane.front { z-index: 2; opacity: 1; }
-        .sv-pane.back  { z-index: 1; opacity: 0; pointer-events: none; }
+        .sv-pane.front { z-index: 3; animation: svFadeIn 0.25s ease; }
+        .sv-pane.mid   { z-index: 2; pointer-events: none; }
+        .sv-pane.back  { z-index: 1; pointer-events: none; }
+        @keyframes svFadeIn {
+            from { opacity: 0; }
+            to   { opacity: 1; }
+        }
         .sv-tap-hint { z-index: 21; }
         #sv-player-bar {
             position: absolute;
