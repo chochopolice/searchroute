@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>searchroute 診断ページ</title>
+<script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyB_Tmq8Qn3F269Jx1ehDA7xcpWFHTxRoBQ&libraries=places,geometry"></script>
+<style>
+  body { background:#0a0e1a; color:#e0eaf8; font-family:'Noto Sans JP',sans-serif; padding:20px; font-size:14px; }
+  h1 { font-size:16px; color:#00d4ff; margin-bottom:16px; }
+  .item { background:#111827; border:1px solid rgba(0,212,255,0.25); border-radius:10px; padding:12px 14px; margin-bottom:10px; }
+  .ok   { border-left:4px solid #22c55e; }
+  .ng   { border-left:4px solid #ef4444; }
+  .wait { border-left:4px solid #7a90b0; }
+  .item b { display:block; margin-bottom:4px; }
+  .detail { font-size:12px; color:#7a90b0; word-break:break-all; line-height:1.6; }
+  a { color:#00d4ff; word-break:break-all; }
+  img.testimg { display:block; margin-top:8px; max-width:320px; border-radius:8px; border:1px solid rgba(0,212,255,0.25); }
+  #jserr { background:#7f1d1d; color:#fff; padding:8px 12px; border-radius:8px; margin-bottom:12px; font-family:monospace; font-size:12px; white-space:pre-wrap; display:none; }
+</style>
+</head>
+<body>
+<h1>🔍 searchroute 診断ページ</h1>
+<div id="jserr"></div>
+<div id="results"></div>
+
+<script>
+window.addEventListener("error", (e) => {
+    const el = document.getElementById("jserr");
+    el.style.display = "block";
+    el.textContent += `⚠ JSエラー: ${e.message} (${(e.filename||"").split("/").pop()}:${e.lineno})\n`;
+});
+
+const resultsEl = document.getElementById("results");
+
+function addItem(title) {
+    const div = document.createElement("div");
+    div.className = "item wait";
+    div.innerHTML = `<b>⏳ ${title}</b><span class="detail">実行中…</span>`;
+    resultsEl.appendChild(div);
+    return {
+        ok(detailHtml)  { div.className = "item ok"; div.innerHTML = `<b>✅ ${title}</b><span class="detail">${detailHtml}</span>`; },
+        ng(detailHtml)  { div.className = "item ng"; div.innerHTML = `<b>❌ ${title}</b><span class="detail">${detailHtml}</span>`; },
+        el: div,
+    };
+}
+
+function detectApiKey() {
+    const s = [...document.scripts].find((x) => (x.src || "").includes("maps.googleapis.com"));
+    if (!s) return "";
+    try { return new URL(s.src).searchParams.get("key") || ""; } catch { return ""; }
+}
+
+function loadImg(url) {
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve({ ok: true, img });
+        img.onerror = () => resolve({ ok: false });
+        img.src = url;
+    });
+}
+
+window.onload = async () => {
+    // 1) Maps JS API
+    const t1 = addItem("Maps JavaScript API の読み込み");
+    if (window.google?.maps?.StreetViewService) t1.ok("google.maps は利用可能です。");
+    else { t1.ng("google.maps が読み込めていません。APIキーまたはネットワークの問題です。"); return; }
+
+    // 2) APIキー検出(app.jsと同じ方法)
+    const t2 = addItem("APIキーの検出(app.jsと同じ処理)");
+    const key = detectApiKey();
+    if (key) t2.ok(`検出されたキー: ${key.slice(0, 12)}…(末尾略)`);
+    else { t2.ng("scriptタグからAPIキーを検出できませんでした。"); return; }
+
+    // 3) パノラマ検索(JS API)
+    const t3 = addItem("パノラマ検索(StreetViewService)");
+    const sv = new google.maps.StreetViewService();
+    const panoData = await new Promise((resolve) => {
+        sv.getPanorama(
+            { location: { lat: 35.681236, lng: 139.767125 }, radius: 200,
+              source: google.maps.StreetViewSource.OUTDOOR },
+            (data, status) => resolve(status === google.maps.StreetViewStatus.OK ? data : null)
+        );
+    });
+    if (panoData?.location?.pano) t3.ok(`パノラマID取得成功: ${panoData.location.pano}`);
+    else { t3.ng("パノラマ検索に失敗しました(StreetViewService)。"); }
+
+    // 4) Static API - location指定
+    const t4 = addItem("Static API 画像取得(location指定)");
+    const url4 = `https://maps.googleapis.com/maps/api/streetview?size=640x400&fov=90&location=35.681236,139.767125&key=${key}&return_error_code=true`;
+    const r4 = await loadImg(url4);
+    if (r4.ok) { t4.ok(`成功。<br><a href="${url4}" target="_blank">${url4}</a>`); r4.img.className = "testimg"; t4.el.appendChild(r4.img); }
+    else t4.ng(`失敗。下のリンクを新しいタブで開くとGoogleのエラー文が見られます:<br><a href="${url4}" target="_blank">${url4}</a>`);
+
+    // 5) Static API - pano指定
+    const t5 = addItem("Static API 画像取得(パノラマID指定)");
+    if (panoData?.location?.pano) {
+        const url5 = `https://maps.googleapis.com/maps/api/streetview?size=640x400&fov=90&pano=${panoData.location.pano}&key=${key}&return_error_code=true`;
+        const r5 = await loadImg(url5);
+        if (r5.ok) { t5.ok(`成功。<br><a href="${url5}" target="_blank">${url5}</a>`); r5.img.className = "testimg"; t5.el.appendChild(r5.img); }
+        else t5.ng(`失敗。下のリンクを新しいタブで開くとGoogleのエラー文が見られます:<br><a href="${url5}" target="_blank">${url5}</a>`);
+    } else {
+        t5.ng("パノラマIDが取得できなかったためスキップ。");
+    }
+
+    const done = document.createElement("div");
+    done.className = "item ok";
+    done.innerHTML = "<b>診断完了</b><span class='detail'>この画面のスクリーンショットを共有してください。❌がある場合はそのリンク先のエラー文も一緒に。</span>";
+    resultsEl.appendChild(done);
+};
+</script>
+</body>
+</html>

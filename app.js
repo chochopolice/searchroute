@@ -544,6 +544,7 @@ const SvPlayer = (() => {
         if (progressMarker) { progressMarker.setMap(null); progressMarker = null; }
         closeExplore(false);
         setBarVisible(false);
+        hidePlaceholder(false);
     }
 
     // =========================================
@@ -883,6 +884,7 @@ const SvPlayer = (() => {
     }
 
     function swapLayerTo(src) {
+        hidePlaceholder(true);
         const back = imgLayers[1 - frontLayer];
         back.src = src;
         back.classList.remove("back");
@@ -1064,6 +1066,20 @@ const SvPlayer = (() => {
             imgLayers.push(img);
         }
         frontLayer = 0;
+
+        // 開始前の案内プレースホルダー
+        const ph = document.createElement("div");
+        ph.id = "sv-placeholder";
+        ph.innerHTML = `
+            <div class="sv-ph-icon">🎬</div>
+            <div class="sv-ph-text">経路を設定して<br>「▶ ストリートビュー開始」を押すと<br>ここに動画が表示されます</div>
+        `;
+        videoWrap.appendChild(ph);
+    }
+
+    function hidePlaceholder(hidden) {
+        const ph = document.getElementById("sv-placeholder");
+        if (ph) ph.style.display = hidden ? "none" : "flex";
     }
 
     function injectStyles() {
@@ -1173,6 +1189,28 @@ const SvPlayer = (() => {
         @keyframes svFlash {
             0%   { opacity: 0.95; transform: translate(-50%, -50%) scale(0.8); }
             100% { opacity: 0;    transform: translate(-50%, -50%) scale(1.5); }
+        }
+        /* 開始前プレースホルダー */
+        #sv-placeholder {
+            position: absolute;
+            inset: 0;
+            z-index: 5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            pointer-events: none;
+            text-align: center;
+        }
+        #sv-placeholder .sv-ph-icon {
+            font-size: 2.6rem;
+            filter: drop-shadow(0 0 14px rgba(0,212,255,0.6));
+        }
+        #sv-placeholder .sv-ph-text {
+            color: #7a90b0;
+            font-size: 0.82rem;
+            line-height: 1.9;
         }
         /* 診断パネル */
         #sv-diagnostic {
