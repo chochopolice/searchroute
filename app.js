@@ -6,6 +6,7 @@
 // --- グローバル変数 ---
 let geocoder;
 let map, panorama;
+let panoA, panoB;               // ★ ダブルバッファ用の2枚のパノラマ
 let marker = null;
 let startLocation = null;
 let endLocation = null;
@@ -21,6 +22,8 @@ const ROUTE_SAMPLE_RATE = 5;      // 経路ポイントの間引き率
 
 const PANO_PREP_MAX         = 400; // これ以下のポイント数ならパノラマ事前解決を行う
 const PANO_PREP_CONCURRENCY = 6;   // パノラマ解決の同時リクエスト数
+const PRELOAD_DWELL_MS      = 500; // 全読込モードで1コマあたりに待つ時間(ms)
+const PRELOAD_CONFIRM_OVER  = 150; // このコマ数を超える全読込は確認ダイアログを出す
 
 const RANDOM_ROUTE_MIN_KM    = 5;
 const RANDOM_ROUTE_MAX_KM    = 50;
@@ -39,19 +42,30 @@ function initMap() {
         zoom: 16,
     });
 
-    panorama = new google.maps.StreetViewPanorama(
-        document.getElementById("street-view"),
-        {
-            position: begin,
-            pov: { heading: 0, pitch: 0 },
-            zoom: 1,
-            // 動画風の見た目のため標準UIを最小化(パン操作は可能なまま)
-            addressControl: false,
-            fullscreenControl: true,
-            motionTracking: false,
-            motionTrackingControl: false,
-        }
-    );
+    // ★ ダブルバッファ: 表示用と先読み用の2枚のパノラマを重ねて生成。
+    //    次のコマは常に裏側のパノラマで先に読み込み、表示を入れ替えることで
+    //    黒画面・低解像度のまま進む問題を防ぐ。
+    const svWrap = document.getElementById("street-view");
+    const paneA = document.createElement("div");
+    const paneB = document.createElement("div");
+    paneA.className = "sv-pane front";
+    paneB.className = "sv-pane back";
+    svWrap.append(paneA, paneB);
+
+    const PANO_OPTIONS = {
+        pov: { heading: 0, pitch: 0 },
+        zoom: 1,
+        // 動画風の見た目のため標準UIを最小化(パン操作は可能なまま)
+        addressControl: false,
+        fullscreenControl: false,   // 全画面は2枚構成と相性が悪いため無効化
+        motionTracking: false,
+        motionTrackingControl: false,
+    };
+    panoA = new google.maps.StreetViewPanorama(paneA, { ...PANO_OPTIONS, position: begin });
+    panoB = new google.maps.StreetViewPanorama(paneB, { ...PANO_OPTIONS, position: begin });
+    panoA._svPane = paneA;
+    panoB._svPane = paneB;
+    panorama = panoA; // 表示中(アクティブ)のパノラマ
 
     directionsService  = new google.maps.DirectionsService();
     directionsRenderer = new google.maps.DirectionsRenderer();
@@ -470,6 +484,13 @@ const SvPlayer = (() => {
     let preparing = false;
     let prepToken = 0;        // 経路変更時に進行中の解析を破棄するためのトークン
 
+    // ---- ダブルバッファ ----
+    let activeP = null;           // 表示中のパノラマ
+    let bufferP = null;           // 先読み用(非表示)のパノラマ
+    let bufferFrameIndex = -1;    // bufferPが読み込んでいるフレーム番号
+    let preloadRunning = false;   // 全読込モード実行中か
+    let preloadToken = 0;         // 全読込モードの中断用トークン
+
     // ---- PANオフセット ----
     let headingOffset = 0;        // 進行方向(baseHeading)からのユーザー視点のズレ
     let currentBaseHeading = 0;
@@ -483,6 +504,8 @@ const SvPlayer = (() => {
     //  初期化(UI注入 + イベント)
     // =========================================
     function init() {
+        activeP = panoA;
+        bufferP = panoB;
         injectStyles();
         injectPlayerBar();
         bindPanoramaEvents();
@@ -495,6 +518,8 @@ const SvPlayer = (() => {
         framesDirty = true;
         prepared = false;
         prepToken++;          // 進行中の解析を無効化
+        preloadToken++;       // 進行中の全読込を中断
+        bufferFrameIndex = -1;
         pause(true);
         frames = [];          // 旧経路のフレームを破棄(次回startで再構築)
         currentIndex = 0;
@@ -650,8 +675,22 @@ const SvPlayer = (() => {
             flashIcon("🏁");
             return;
         }
-        currentIndex++;
-        showFrame(currentIndex);
+        const next = currentIndex + 1;
+        if (bufferFrameIndex === next) {
+            // ★ 裏で読み込み済みのパノラマを表に出す(黒画面なしのクロスフェード切替)
+            swapBuffers();
+            currentIndex = next;
+            const frame = frames[next];
+            map.setCenter(frame.position);
+            updateProgressMarker(frame.position);
+            applyPov(frame.baseHeading);
+            updateUi();
+            preloadNext(next + 1);
+        } else {
+            // フォールバック(シーク直後・先読み未完了時)
+            currentIndex = next;
+            showFrame(next);
+        }
         scheduleTick();
     }
 
@@ -669,57 +708,102 @@ const SvPlayer = (() => {
     }
 
     // =========================================
-    //  フレーム表示
+    //  フレーム表示 & ダブルバッファ
     // =========================================
+    function setFrameOn(p, frame) {
+        if (frame.panoId) {
+            p.setPano(frame.panoId);
+        } else {
+            p.setPosition(frame.position);
+        }
+    }
+
+    // 次のフレームを裏側のパノラマで先読みしておく
+    function preloadNext(i) {
+        if (!bufferP || !frames[i]) { bufferFrameIndex = -1; return; }
+        setFrameOn(bufferP, frames[i]);
+        mirrorBufferPov(i);
+        bufferFrameIndex = i;
+    }
+
+    // 表示用と先読み用を入れ替える(先読み済みの絵が即座に表示される)
+    function swapBuffers() {
+        [activeP, bufferP] = [bufferP, activeP];
+        panorama = activeP; // 外部参照用のグローバルも更新
+        activeP._svPane.classList.remove("back");
+        activeP._svPane.classList.add("front");
+        bufferP._svPane.classList.remove("front");
+        bufferP._svPane.classList.add("back");
+        map.setStreetView(activeP);
+    }
+
     function showFrame(index) {
         const frame = frames[index];
         if (!frame) return;
 
-        if (frame.panoId) {
-            panorama.setPano(frame.panoId);
-        } else {
-            panorama.setPosition(frame.position);
-        }
+        setFrameOn(activeP, frame);
         map.setCenter(frame.position);
         updateProgressMarker(frame.position);
         applyPov(frame.baseHeading);
         updateUi();
+        preloadNext(index + 1);
     }
 
     // 進行方向 + ユーザーオフセット でPOVを適用
     function applyPov(baseHeading) {
         currentBaseHeading = baseHeading;
-        const pov = panorama.getPov() || { heading: 0, pitch: 0 };
-        const heading = ((baseHeading + headingOffset) % 360 + 360) % 360;
+        const pov = activeP.getPov() || { heading: 0, pitch: 0 };
+        const heading = norm360(baseHeading + headingOffset);
         expectedHeading = heading;
-        panorama.setPov({ heading, pitch: pov.pitch ?? 0 }); // pitchはユーザーの値を維持
+        activeP.setPov({ heading, pitch: pov.pitch ?? 0 }); // pitchはユーザーの値を維持
+    }
+
+    // 先読み側のPOVを「そのフレームの進行方向 + 現在のオフセット」に合わせておく
+    // (ユーザーが横を向いていたら、次のコマも横向きの状態で読み込まれる)
+    function mirrorBufferPov(frameIndex = bufferFrameIndex) {
+        if (!bufferP || frameIndex < 0 || !frames[frameIndex]) return;
+        const pov = activeP.getPov() || { pitch: 0 };
+        bufferP.setPov({
+            heading: norm360(frames[frameIndex].baseHeading + headingOffset),
+            pitch: pov.pitch ?? 0,
+        });
     }
 
     // ユーザーのPAN操作を検知してオフセットを更新
     function bindPanoramaEvents() {
-        panorama.addListener("pov_changed", () => {
-            const pov = panorama.getPov();
-            if (pov == null) return;
-            // 自分がsetPovした変更なら無視(非同期発火でも安全な値比較方式)
-            if (expectedHeading !== null && Math.abs(normalizeDeg(pov.heading - expectedHeading)) < 0.01) {
-                return;
-            }
-            // ユーザー操作 → 進行方向からのズレを記録
-            headingOffset = normalizeDeg(pov.heading - currentBaseHeading);
-            updateRecenterButton();
-        });
+        [panoA, panoB].forEach((p) => {
+            p.addListener("pov_changed", () => {
+                if (p !== activeP) return; // 先読み側のPOV変更は無視
+                const pov = p.getPov();
+                if (pov == null) return;
+                // 自分がsetPovした変更なら無視(非同期発火でも安全な値比較方式)
+                if (expectedHeading !== null && Math.abs(normalizeDeg(pov.heading - expectedHeading)) < 0.01) {
+                    return;
+                }
+                // ユーザー操作 → 進行方向からのズレを記録し、先読み側にも反映
+                headingOffset = normalizeDeg(pov.heading - currentBaseHeading);
+                mirrorBufferPov();
+                updateRecenterButton();
+            });
 
-        // ユーザーが矢印リンクで自力移動した場合もマップを追従
-        panorama.addListener("position_changed", () => {
-            const pos = panorama.getPosition();
-            if (pos) updateProgressMarker(pos);
+            // ユーザーが矢印リンクで自力移動した場合もマップを追従
+            p.addListener("position_changed", () => {
+                if (p !== activeP) return;
+                const pos = p.getPosition();
+                if (pos) updateProgressMarker(pos);
+            });
         });
     }
 
     function recenter() {
         headingOffset = 0;
         applyPov(currentBaseHeading);
+        mirrorBufferPov();
         updateRecenterButton();
+    }
+
+    function norm360(deg) {
+        return ((deg % 360) + 360) % 360;
     }
 
     function normalizeDeg(deg) {
@@ -756,6 +840,15 @@ const SvPlayer = (() => {
     // =========================================
     function injectStyles() {
         const css = `
+        /* ダブルバッファ用パノラマ2枚(表:front / 裏:back) */
+        .sv-pane {
+            position: absolute;
+            inset: 0;
+            transition: opacity 0.25s ease;
+        }
+        .sv-pane.front { z-index: 2; opacity: 1; }
+        .sv-pane.back  { z-index: 1; opacity: 0; pointer-events: none; }
+        .sv-tap-hint { z-index: 21; }
         #sv-player-bar {
             position: absolute;
             left: 10px; right: 10px; bottom: 10px;
@@ -858,6 +951,7 @@ const SvPlayer = (() => {
                 <option value="3">3x</option>
             </select>
             <button id="sv-recenter" title="進行方向に視点を戻す">⌖</button>
+            <button id="sv-preload"  title="全コマを事前読み込み(もう一度押すと中断)">⇣</button>
         `;
         svWrap.appendChild(bar);
 
@@ -875,6 +969,7 @@ const SvPlayer = (() => {
             counter:  bar.querySelector("#sv-counter"),
             speedSel: bar.querySelector("#sv-speed"),
             recenter: bar.querySelector("#sv-recenter"),
+            preload:  bar.querySelector("#sv-preload"),
         };
 
         // バー内の操作がタップ再生/停止トグルに伝播しないように
@@ -888,6 +983,7 @@ const SvPlayer = (() => {
         ui.seek.addEventListener("input", () => seekTo(parseInt(ui.seek.value, 10)));
         ui.speedSel.addEventListener("change", () => setSpeed(parseFloat(ui.speedSel.value)));
         ui.recenter.addEventListener("click", recenter);
+        ui.preload.addEventListener("click", prewarmAll);
     }
 
     function setBarVisible(visible) {
@@ -923,6 +1019,50 @@ const SvPlayer = (() => {
         ui.flash.classList.remove("flash");
         void ui.flash.offsetWidth; // reflowでアニメーション再発火
         ui.flash.classList.add("flash");
+    }
+
+    // =========================================
+    //  全コマ事前読み込み(プリウォーム)モード
+    //  裏側のパノラマで全フレームを順に表示し、タイルを
+    //  ブラウザのキャッシュに載せてから再生する
+    // =========================================
+    async function prewarmAll() {
+        if (preloadRunning) { preloadToken++; return; } // 実行中にもう一度押すと中断
+
+        if (route.length === 0) { alert("有効な経路がありません。"); return; }
+        setBarVisible(true);
+        const ok = await prepareFrames();
+        if (!ok || frames.length === 0) return;
+
+        if (frames.length > PRELOAD_CONFIRM_OVER) {
+            const sec = Math.ceil((frames.length * PRELOAD_DWELL_MS) / 1000);
+            if (!confirm(`${frames.length}コマあります。全読込には約${sec}秒かかります。実行しますか?\n(実行中に ⇣ をもう一度押すと中断できます)`)) return;
+        }
+
+        preloadRunning = true;
+        const myToken = ++preloadToken;
+        pause(true);
+        if (ui.preload) ui.preload.classList.add("active");
+
+        try {
+            for (let i = 0; i < frames.length; i++) {
+                if (myToken !== preloadToken) return; // 中断 or 経路変更
+                setFrameOn(bufferP, frames[i]);
+                bufferFrameIndex = i;
+                if (ui.counter) {
+                    ui.counter.textContent = `読込 ${Math.round(((i + 1) / frames.length) * 100)}%`;
+                }
+                await new Promise((r) => setTimeout(r, PRELOAD_DWELL_MS));
+            }
+            flashIcon("✔");
+        } finally {
+            preloadRunning = false;
+            if (ui.preload) ui.preload.classList.remove("active");
+            if (myToken === preloadToken) {
+                preloadNext(currentIndex + 1); // 先読みを現在位置基準に戻す
+                updateUi();
+            }
+        }
     }
 
     // =========================================
