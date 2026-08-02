@@ -5,7 +5,7 @@
 
 // --- グローバル変数 ---
 let geocoder;
-let map, panorama;              // panorama は「表示中(アクティブ)」のパノラマを指す
+let map;
 let marker = null;
 let startLocation = null;
 let endLocation = null;
@@ -53,7 +53,6 @@ function initMap() {
     directionsRenderer = new google.maps.DirectionsRenderer();
     directionsRenderer.setMap(map);
     geocoder = new google.maps.Geocoder();
-    map.setStreetView(panorama);
 
     map.addListener("click", (event) => createMarker(event.latLng));
 
@@ -628,7 +627,7 @@ const SvPlayer = (() => {
         return Math.round(p / HEADING_STEP) * HEADING_STEP;
     }
 
-    function imageUrl(frame, h, p) {
+    function imageUrl(frame, h, p, forceLocation = false) {
         const params = new URLSearchParams({
             size: STATIC_SIZE,
             fov: String(STATIC_FOV),
@@ -637,7 +636,7 @@ const SvPlayer = (() => {
             key: apiKey,
             return_error_code: "true",
         });
-        if (frame.panoId) {
+        if (frame.panoId && !forceLocation) {
             params.set("pano", frame.panoId);
         } else {
             params.set("location", `${frame.position.lat()},${frame.position.lng()}`);
@@ -647,21 +646,38 @@ const SvPlayer = (() => {
         return `https://maps.googleapis.com/maps/api/streetview?${params.toString()}`;
     }
 
-    // フレーム画像を(必要なら取得して)返す。読み込み完了で resolve
+    // フレーム画像を(必要なら取得して)返す。読み込み完了で resolve。
+    // pano指定で失敗した場合(第三者投稿パノラマ等はStatic APIで取得不可のことがある)は
+    // location指定で自動的に取り直す
     function fetchFrameImage(frame, h = roundedHeading(frame), p = roundedPitch()) {
         const cacheKey = `h${h}_p${p}`;
         const hit = frame.cache[cacheKey];
         if (hit) return hit.promise;
 
-        const img = new Image();
-        const entry = { img, loaded: false };
-        entry.promise = new Promise((resolve) => {
-            img.onload  = () => { entry.loaded = true; resolve(img); };
-            img.onerror = () => { entry.error = true; resolve(null); };
-            img.src = imageUrl(frame, h, p);
-        });
+        const entry = { loaded: false };
+        entry.promise = loadImage(imageUrl(frame, h, p))
+            .catch((failedUrl) => {
+                if (!frame.panoId) return Promise.reject(failedUrl);
+                console.warn("[SvPlayer] pano指定で取得失敗 → location指定で再試行:", failedUrl);
+                return loadImage(imageUrl(frame, h, p, true)); // フォールバック
+            })
+            .then((img) => { entry.loaded = true; entry.img = img; return img; })
+            .catch((failedUrl) => {
+                entry.error = true;
+                console.error("[SvPlayer] 画像取得失敗:", failedUrl);
+                return null;
+            });
         frame.cache[cacheKey] = entry;
         return entry.promise;
+    }
+
+    function loadImage(url) {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload  = () => resolve(img);
+            img.onerror = () => reject(url);
+            img.src = url;
+        });
     }
 
     function isFrameReady(frame) {
@@ -701,8 +717,11 @@ const SvPlayer = (() => {
                 if (done >= 5 && errors >= done) {
                     alert(
                         "ストリートビュー画像を取得できませんでした。\n" +
-                        "Google Cloud コンソールでこのAPIキーに対して\n" +
-                        "「Street View Static API」が有効になっているか確認してください。"
+                        "Google Cloud コンソールで以下をご確認ください:\n" +
+                        "・「Street View Static API」が有効になっているか\n" +
+                        "・APIキーの「APIの制限」にStreet View Static APIが含まれているか\n" +
+                        "・「アプリケーションの制限(リファラー)」でこのサイトが許可されているか\n" +
+                        "(詳細はF12のConsole/Networkタブに出力されています)"
                     );
                     return false;
                 }
