@@ -484,6 +484,7 @@ const SvPlayer = (() => {
     let progressMarker = null;
     let apiKey = "";
     let preloadDone = false;      // 全コマ読み込みが完了しているか
+    let lastFailedUrl = null;     // 診断用: 直近で取得に失敗した画像URL
 
     // =========================================
     //  初期化
@@ -664,6 +665,7 @@ const SvPlayer = (() => {
             .then((img) => { entry.loaded = true; entry.img = img; return img; })
             .catch((failedUrl) => {
                 entry.error = true;
+                lastFailedUrl = failedUrl;
                 console.error("[SvPlayer] 画像取得失敗:", failedUrl);
                 return null;
             });
@@ -715,14 +717,7 @@ const SvPlayer = (() => {
                 }
                 // 最初の数枚が全滅ならAPI未有効の可能性大 → 即中断して案内
                 if (done >= 5 && errors >= done) {
-                    alert(
-                        "ストリートビュー画像を取得できませんでした。\n" +
-                        "Google Cloud コンソールで以下をご確認ください:\n" +
-                        "・「Street View Static API」が有効になっているか\n" +
-                        "・APIキーの「APIの制限」にStreet View Static APIが含まれているか\n" +
-                        "・「アプリケーションの制限(リファラー)」でこのサイトが許可されているか\n" +
-                        "(詳細はF12のConsole/Networkタブに出力されています)"
-                    );
+                    showDiagnostic();
                     return false;
                 }
             }
@@ -730,9 +725,40 @@ const SvPlayer = (() => {
         await Promise.all(workers);
 
         if (myToken !== prepToken) return false;
-        if (errors > 0 && errors >= total * 0.5) return false;
+        if (errors > 0 && errors >= total * 0.5) {
+            showDiagnostic();
+            return false;
+        }
         preloadDone = true;
         return true;
+    }
+
+    // =========================================
+    //  診断オーバーレイ: 失敗した画像URLを表示。
+    //  リンクを新しいタブで開くとGoogleのエラー文がそのまま見える
+    // =========================================
+    function showDiagnostic() {
+        const old = document.getElementById("sv-diagnostic");
+        if (old) old.remove();
+
+        const panel = document.createElement("div");
+        panel.id = "sv-diagnostic";
+        panel.innerHTML = `
+            <h3>⚠ ストリートビュー画像を取得できませんでした</h3>
+            <p>下のリンクを<strong>新しいタブで開く</strong>と、Googleからの
+               エラーメッセージ(拒否の理由)がそのまま表示されます。</p>
+            ${lastFailedUrl ? `<a href="${lastFailedUrl}" target="_blank" rel="noopener">失敗したリクエストを開いて原因を確認する ↗</a>` : ""}
+            <p class="sv-diag-note">主な原因: Street View Static API未有効 /
+               APIキーの「APIの制限」に未追加 / リファラー制限 / 請求先未設定
+               (設定変更後は反映まで最大5分かかります)</p>
+            <button id="sv-diag-close">閉じる</button>
+        `;
+        videoWrap.appendChild(panel);
+        panel.querySelector("#sv-diag-close").addEventListener("click", () => panel.remove());
+        ["click", "pointerdown", "pointerup", "pointermove"].forEach((ev) =>
+            panel.addEventListener(ev, (e) => e.stopPropagation())
+        );
+        updateUi();
     }
 
     // =========================================
@@ -1126,6 +1152,39 @@ const SvPlayer = (() => {
         @keyframes svFlash {
             0%   { opacity: 0.95; transform: translate(-50%, -50%) scale(0.8); }
             100% { opacity: 0;    transform: translate(-50%, -50%) scale(1.5); }
+        }
+        /* 診断パネル */
+        #sv-diagnostic {
+            position: absolute;
+            inset: 12px;
+            z-index: 30;
+            background: rgba(10,14,26,0.95);
+            border: 1px solid rgba(255,106,0,0.5);
+            border-radius: 12px;
+            padding: 18px;
+            color: #e0eaf8;
+            font-size: 0.82rem;
+            line-height: 1.7;
+            overflow: auto;
+            font-family: 'Noto Sans JP', sans-serif;
+        }
+        #sv-diagnostic h3 { color: #ff6a00; font-size: 0.9rem; margin-bottom: 8px; }
+        #sv-diagnostic a {
+            display: inline-block;
+            margin: 8px 0;
+            color: #00d4ff;
+            word-break: break-all;
+            font-weight: 700;
+        }
+        #sv-diagnostic .sv-diag-note { color: #7a90b0; font-size: 0.72rem; }
+        #sv-diag-close {
+            margin-top: 10px;
+            background: transparent;
+            border: 1px solid rgba(0,212,255,0.4);
+            color: #00d4ff;
+            border-radius: 8px;
+            padding: 6px 16px;
+            cursor: pointer;
         }
         /* 旧オーバーレイは無効化 */
         #sv-tap-overlay { pointer-events: none !important; display: none !important; }
