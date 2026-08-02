@@ -1,11 +1,11 @@
 // =============================================
 //  Google Maps ストリートビュー 散歩アプリ
-//  v2: 動画風プレイヤー(シーク/速度/PANオフセット追従)
+//  v3: 動画風プレイヤー(Static API静止画シーケンス方式)
 // =============================================
 
 // --- グローバル変数 ---
 let geocoder;
-let map, panorama;              // panorama は「表示中(アクティブ)」のパノラマを指す
+let map;
 let marker = null;
 let startLocation = null;
 let endLocation = null;
@@ -22,11 +22,14 @@ const ROUTE_SAMPLE_RATE = 5;      // 経路ポイントの間引き率
 const PANO_PREP_MAX         = 400; // これ以下のポイント数ならパノラマ事前解決を行う
 const PANO_PREP_CONCURRENCY = 6;   // パノラマ解決の同時リクエスト数
 
-// パノラマプール: 現在のコマ + 先のコマを常に読み込み済みで保持する枚数。
-// WebGLコンテキスト上限(ブラウザで十数個)があるため増やしすぎ注意(推奨 3〜5)
-const POOL_SIZE         = 4;
-const INITIAL_BUFFER_MS = 3000;    // 再生開始前のバッファ(先読み)時間
-const ASSIGN_SPACING_MS = 300;     // 先読みパノラマの読み込み開始をずらす間隔
+// --- Static API 静止画シーケンス設定 ---
+const STATIC_SIZE         = "640x400"; // 取得画像サイズ(Static APIの上限は640x640)
+const STATIC_FOV          = 90;        // 視野角(小さいほどズーム)
+const HEADING_STEP        = 5;         // PAN操作の角度刻み(画像キャッシュ単位)
+const PREFETCH_AHEAD      = 8;         // 視点変更後に先読みするコマ数
+const IMG_CONCURRENCY     = 6;         // 画像の同時読み込み数
+const POV_REFRESH_MS      = 140;       // ドラッグ中の画像更新間隔
+const PRELOAD_CONFIRM_OVER = 300;      // このコマ数を超える全読込は確認ダイアログを出す
 
 const RANDOM_ROUTE_MIN_KM    = 5;
 const RANDOM_ROUTE_MAX_KM    = 50;
@@ -45,16 +48,11 @@ function initMap() {
         zoom: 16,
     });
 
-    // ★ パノラマプール: POOL_SIZE枚のパノラマを重ねて生成し、
-    //    「現在のコマ+先の数コマ」を常に読み込み済みの状態で保持する。
-    //    (WebGLコンテキスト上限があるため全コマ保持は不可 → 窓をスライドさせる方式)
-    SvPlayer.initPanoramas(document.getElementById("street-view"), begin);
 
     directionsService  = new google.maps.DirectionsService();
     directionsRenderer = new google.maps.DirectionsRenderer();
     directionsRenderer.setMap(map);
     geocoder = new google.maps.Geocoder();
-    map.setStreetView(panorama);
 
     map.addListener("click", (event) => createMarker(event.latLng));
 
@@ -446,124 +444,88 @@ function extractRouteCoordinates(response) {
 
 // =============================================
 // =============================================
-//  ★★★ 動画風ストリートビュー プレイヤー ★★★
+//  ★★★ 動画風ストリートビュー プレイヤー v3 ★★★
 //
-//  - フレーム列(経路ポイント→パノラマ)を事前計算しシーク可能に
-//  - 再生 / 一時停止 / シークバー / 速度変更
-//  - ユーザーのPAN操作を「進行方向からのオフセット」として保持し、
-//    移動後も向きを維持(視聴中・一時停止中いつでもPAN可能)
+//  Street View Static API の静止画シーケンス方式。
+//  - 全コマを <img> として事前読み込み(onloadで完了を確実に検知)
+//  - 再生は読み込み済み画像の切り替えのみ → 黒画面が原理的に出ない
+//  - ドラッグでPAN(5°刻みで画像を取り直し)。向きは移動後も維持
+//  - 一時停止中は 🧭 でインタラクティブなパノラマに切替えて自由に見回し
+//
+//  ※ Google Cloud コンソールで「Street View Static API」を
+//    有効にしておく必要があります(画像1枚 = 1リクエスト課金対象)
 // =============================================
 // =============================================
 const SvPlayer = (() => {
 
     // ---- 状態 ----
-    let frames = [];          // { position: LatLng, panoId: string|null, baseHeading: number }
-    let framesDirty = true;   // routeが変わったら再構築が必要
+    let frames = [];          // { position, panoId, baseHeading, cache: {key: {img, loaded}} }
+    let framesDirty = true;
     let currentIndex = 0;
     let playing = false;
     let timer = null;
-    let speed = 1;            // 再生速度倍率
-    let prepared = false;     // フレーム構築済みか
+    let speed = 1;
+    let prepared = false;
     let preparing = false;
-    let prepToken = 0;        // 経路変更時に進行中の解析を破棄するためのトークン
+    let prepToken = 0;        // 経路変更で進行中の解析/読み込みを破棄するトークン
 
-    // ---- パノラマプール ----
-    let pool = [];            // { pano, el, frameIndex } × POOL_SIZE
-    let frontMember = null;   // 表示中のプールメンバー
-    let assignQueue = [];     // 先読み割り当ての順次実行キュー
-    let assignTimer = null;
-
-    // ---- PANオフセット ----
-    let headingOffset = 0;        // 進行方向(baseHeading)からのユーザー視点のズレ
-    let currentBaseHeading = 0;
-    let expectedHeading = null;   // 自分でsetPovした値(pov_changedの自他判定用)
+    // ---- 視点(PAN)オフセット ----
+    let headingOffset = 0;    // 進行方向からのズレ(度)
+    let pitchOffset = 0;      // 上下方向のズレ(度)
 
     // ---- UI要素 ----
     let ui = {};
-    let progressMarker = null;    // 地図上の現在位置マーカー
+    let videoWrap = null;         // 画像レイヤーの親
+    let imgLayers = [];           // [imgA, imgB] 前面/背面を入れ替えて使う
+    let frontLayer = 0;           // imgLayers の表側インデックス
+    let explorePano = null;       // 見回し用インタラクティブパノラマ(遅延生成)
+    let exploreEl = null;
+    let exploring = false;
+    let progressMarker = null;
+    let apiKey = "";
+    let preloadDone = false;      // 全コマ読み込みが完了しているか
 
     // =========================================
-    //  初期化(UI注入 + イベント)
+    //  初期化
     // =========================================
-    // =========================================
-    //  パノラマプール生成(initMapから呼ばれる)
-    // =========================================
-    function initPanoramas(container, begin) {
-        const opts = {
-            pov: { heading: 0, pitch: 0 },
-            zoom: 1,
-            // 動画風の見た目のため標準UIを最小化(パン操作は可能なまま)
-            addressControl: false,
-            fullscreenControl: false, // 全画面は多層構成と相性が悪いため無効化
-            motionTracking: false,
-            motionTrackingControl: false,
-        };
-        for (let k = 0; k < POOL_SIZE; k++) {
-            const el = document.createElement("div");
-            el.className = "sv-pane " + (k === 0 ? "front" : "back");
-            container.appendChild(el);
-            const pano = new google.maps.StreetViewPanorama(el, { ...opts, position: begin });
-            const member = { pano, el, frameIndex: -1 };
-            attachMemberListeners(member);
-            pool.push(member);
-        }
-        frontMember = pool[0];
-        panorama = frontMember.pano;
-    }
-
-    function attachMemberListeners(member) {
-        // ユーザーのPAN操作を検知してオフセットを更新(表示中メンバーのみ)
-        member.pano.addListener("pov_changed", () => {
-            if (member !== frontMember) return;
-            const pov = member.pano.getPov();
-            if (pov == null) return;
-            // 自分がsetPovした変更なら無視(非同期発火でも安全な値比較方式)
-            if (expectedHeading !== null && Math.abs(normalizeDeg(pov.heading - expectedHeading)) < 0.01) {
-                return;
-            }
-            headingOffset = normalizeDeg(pov.heading - currentBaseHeading);
-            mirrorPoolPov(); // 先読み中のコマも同じ向きにしておく
-            updateRecenterButton();
-        });
-
-        // ユーザーが矢印リンクで自力移動した場合もマップを追従
-        member.pano.addListener("position_changed", () => {
-            if (member !== frontMember) return;
-            const pos = member.pano.getPosition();
-            if (pos) updateProgressMarker(pos);
-        });
-    }
-
     function init() {
+        apiKey = detectApiKey();
         injectStyles();
+        buildVideoLayers();
         injectPlayerBar();
-        bindTapToggle();
+        bindPointer();
         bindKeyboard();
         updateUi();
+    }
+
+    function detectApiKey() {
+        const s = [...document.scripts].find((x) => (x.src || "").includes("maps.googleapis.com"));
+        if (!s) return "";
+        try { return new URL(s.src).searchParams.get("key") || ""; } catch { return ""; }
     }
 
     function onRouteChanged() {
         framesDirty = true;
         prepared = false;
-        prepToken++;          // 進行中の解析を無効化
+        preloadDone = false;
+        prepToken++;
         pause(true);
-        frames = [];          // 旧経路のフレームを破棄(次回startで再構築)
-        pool.forEach((m) => { m.frameIndex = -1; }); // プールの読み込み状態も無効化
-        assignQueue = [];
-        if (assignTimer) { clearTimeout(assignTimer); assignTimer = null; }
+        frames = [];
         currentIndex = 0;
         headingOffset = 0;
+        pitchOffset = 0;
         updateUi();
     }
 
     function reset() {
         onRouteChanged();
         if (progressMarker) { progressMarker.setMap(null); progressMarker = null; }
+        closeExplore(false);
         setBarVisible(false);
     }
 
     // =========================================
-    //  フレーム構築
+    //  フレーム構築(経路→パノラマ解決)
     // =========================================
     function buildRawFrames() {
         frames = route.map((pt, i) => {
@@ -571,11 +533,10 @@ const SvPlayer = (() => {
             const heading = (i >= route.length - 1 && route.length >= 2)
                 ? google.maps.geometry.spherical.computeHeading(route[route.length - 2], pt)
                 : google.maps.geometry.spherical.computeHeading(pt, route[lookIdx]);
-            return { position: pt, panoId: null, baseHeading: heading };
+            return { position: pt, panoId: null, baseHeading: heading, cache: {} };
         });
     }
 
-    // パノラマIDを事前解決し、連続する同一パノラマを間引く(=カクつき削減 & 正確なシーク)
     async function prepareFrames() {
         if (!framesDirty && prepared) return true;
         if (preparing) return false;
@@ -586,15 +547,14 @@ const SvPlayer = (() => {
 
         if (frames.length === 0) { preparing = false; return false; }
 
-        // ポイント数が多すぎる場合は事前解決をスキップ(生ポイントのまま再生)
         if (frames.length > PANO_PREP_MAX) {
             framesDirty = false;
             prepared = true;
             preparing = false;
-            return true;
+            return true; // パノラマ解決なし(Static APIはlocation指定で取得)
         }
 
-        setPrepProgress(0);
+        setCounterText("解析中 0%");
         const sv = new google.maps.StreetViewService();
 
         const resolveOne = (frame) => new Promise((resolve) => {
@@ -610,17 +570,16 @@ const SvPlayer = (() => {
             );
         });
 
-        // 同時実行数を絞ったプール処理
         let done = 0;
         let cursor = 0;
         const workers = Array.from({ length: PANO_PREP_CONCURRENCY }, async () => {
             while (cursor < frames.length) {
-                if (myToken !== prepToken) return; // 経路が変わったので中断
+                if (myToken !== prepToken) return;
                 const idx = cursor++;
                 await resolveOne(frames[idx]);
                 done++;
                 if (done % 5 === 0 || done === frames.length) {
-                    setPrepProgress(done / frames.length);
+                    setCounterText(`解析中 ${Math.round((done / frames.length) * 100)}%`);
                 }
             }
         });
@@ -628,7 +587,7 @@ const SvPlayer = (() => {
 
         if (myToken !== prepToken) { preparing = false; return false; }
 
-        // 連続する同一パノラマを除去(未解決 null は残す)
+        // 連続する同一パノラマを除去
         const deduped = [];
         for (const f of frames) {
             const prev = deduped[deduped.length - 1];
@@ -652,7 +611,107 @@ const SvPlayer = (() => {
         framesDirty = false;
         prepared = true;
         preparing = false;
-        setPrepProgress(null);
+        return true;
+    }
+
+    // =========================================
+    //  Static API 画像の取得・キャッシュ
+    // =========================================
+    function roundedHeading(frame) {
+        const h = ((frame.baseHeading + headingOffset) % 360 + 360) % 360;
+        return Math.round(h / HEADING_STEP) * HEADING_STEP % 360;
+    }
+
+    function roundedPitch() {
+        const p = Math.max(-35, Math.min(35, pitchOffset));
+        return Math.round(p / HEADING_STEP) * HEADING_STEP;
+    }
+
+    function imageUrl(frame, h, p) {
+        const params = new URLSearchParams({
+            size: STATIC_SIZE,
+            fov: String(STATIC_FOV),
+            heading: String(h),
+            pitch: String(p),
+            key: apiKey,
+            return_error_code: "true",
+        });
+        if (frame.panoId) {
+            params.set("pano", frame.panoId);
+        } else {
+            params.set("location", `${frame.position.lat()},${frame.position.lng()}`);
+            params.set("radius", "60");
+            params.set("source", "outdoor");
+        }
+        return `https://maps.googleapis.com/maps/api/streetview?${params.toString()}`;
+    }
+
+    // フレーム画像を(必要なら取得して)返す。読み込み完了で resolve
+    function fetchFrameImage(frame, h = roundedHeading(frame), p = roundedPitch()) {
+        const cacheKey = `h${h}_p${p}`;
+        const hit = frame.cache[cacheKey];
+        if (hit) return hit.promise;
+
+        const img = new Image();
+        const entry = { img, loaded: false };
+        entry.promise = new Promise((resolve) => {
+            img.onload  = () => { entry.loaded = true; resolve(img); };
+            img.onerror = () => { entry.error = true; resolve(null); };
+            img.src = imageUrl(frame, h, p);
+        });
+        frame.cache[cacheKey] = entry;
+        return entry.promise;
+    }
+
+    function isFrameReady(frame) {
+        const e = frame.cache[`h${roundedHeading(frame)}_p${roundedPitch()}`];
+        return !!(e && e.loaded);
+    }
+
+    // 現在位置から先のコマを現在の視点向きで先読み
+    function prefetchAhead(i) {
+        for (let k = 0; k <= PREFETCH_AHEAD; k++) {
+            const f = frames[i + k];
+            if (f) fetchFrameImage(f);
+        }
+    }
+
+    // =========================================
+    //  ★ 全コマ事前読み込み(本命機能)
+    // =========================================
+    async function preloadAll() {
+        const myToken = prepToken;
+        const total = frames.length;
+        let done = 0;
+        let errors = 0;
+
+        const jobs = frames.slice();
+        const workers = Array.from({ length: IMG_CONCURRENCY }, async () => {
+            while (jobs.length > 0) {
+                if (myToken !== prepToken) return;
+                const frame = jobs.shift();
+                const img = await fetchFrameImage(frame);
+                if (!img) errors++;
+                done++;
+                if (done % 3 === 0 || done === total) {
+                    setCounterText(`読込 ${Math.round((done / total) * 100)}%`);
+                }
+                // 最初の数枚が全滅ならAPI未有効の可能性大 → 即中断して案内
+                if (done >= 5 && errors >= done) {
+                    alert(
+                        "ストリートビュー画像を取得できませんでした。\n" +
+                        "Google Cloud コンソールでこのAPIキーに対して\n" +
+                        "「Street View Static API」が有効になっているか確認してください。"
+                    );
+                    return false;
+                }
+            }
+        });
+        await Promise.all(workers);
+
+        if (myToken !== prepToken) return false;
+        if (errors > 0 && errors >= total * 0.5) return false;
+        preloadDone = true;
         return true;
     }
 
@@ -663,26 +722,36 @@ const SvPlayer = (() => {
         setBarVisible(true);
         const ok = await prepareFrames();
         if (!ok || frames.length === 0) { updateUi(); return; }
+
+        if (frames.length > PRELOAD_CONFIRM_OVER) {
+            if (!confirm(
+                `${frames.length}コマの画像を事前読み込みします。` +
+                `(Static APIリクエストが${frames.length}回発生します)\n実行しますか?`
+            )) return;
+        }
+
+        const myToken = prepToken;
         currentIndex = 0;
         headingOffset = 0;
-        showFrame(0); // 先頭を表示しつつプールに先のコマを読み込ませる
+        pitchOffset = 0;
 
-        // ★ 先読みバッファが溜まるまで少し待ってから再生開始
-        const myToken = prepToken;
-        if (ui.counter) ui.counter.textContent = "バッファ中…";
-        await new Promise((r) => setTimeout(r, INITIAL_BUFFER_MS));
-        if (myToken !== prepToken) return; // 待機中に経路が変わった
+        // ★ 全コマを読み込み切ってから再生開始
+        const loaded = await preloadAll();
+        if (myToken !== prepToken) return;
+        if (!loaded) { updateUi(); return; }
+
+        showFrame(0);
         play();
     }
 
     function play() {
         if (playing) return;
         if (frames.length === 0) {
-            // 「再開」ボタンから直接来た場合など、未構築なら構築から
             if (route.length > 0) { start(); }
             return;
         }
-        if (currentIndex >= frames.length - 1) currentIndex = 0; // 終端からは先頭へ
+        closeExplore();
+        if (currentIndex >= frames.length - 1) currentIndex = 0;
         playing = true;
         scheduleTick();
         flashIcon("▶");
@@ -711,15 +780,16 @@ const SvPlayer = (() => {
             return;
         }
         currentIndex++;
-        showFrame(currentIndex); // プールに読み込み済みのコマならスワップ表示(黒画面なし)
+        showFrame(currentIndex);
         scheduleTick();
     }
 
     function seekTo(index) {
         if (frames.length === 0) return;
         currentIndex = Math.max(0, Math.min(index, frames.length - 1));
+        closeExplore();
         showFrame(currentIndex);
-        if (playing) scheduleTick(); // タイマーを打ち直す
+        if (playing) scheduleTick();
     }
 
     function setSpeed(mult) {
@@ -729,139 +799,158 @@ const SvPlayer = (() => {
     }
 
     // =========================================
-    //  フレーム表示 & パノラマプール制御
+    //  フレーム表示(画像レイヤー入れ替え)
     // =========================================
-    function setFrameOn(p, frame) {
-        if (frame.panoId) {
-            p.setPano(frame.panoId);
-        } else {
-            p.setPosition(frame.position);
-        }
-    }
-
-    // メンバーに指定フレームを読み込ませる(既に同じコマなら何もしない)
-    function assignMember(member, frameIndex) {
-        const frame = frames[frameIndex];
-        if (!frame) { member.frameIndex = -1; return; }
-        if (member.frameIndex === frameIndex) return; // 読み込み済み
-        setFrameOn(member.pano, frame);
-        member.pano.setPov({
-            heading: norm360(frame.baseHeading + headingOffset),
-            pitch: frontMember?.pano.getPov()?.pitch ?? 0,
-        });
-        member.frameIndex = frameIndex;
-    }
-
-    // 先読み割り当てをキューに積み、ASSIGN_SPACING_MS間隔で1枚ずつ実行する
-    // (複数パノラマの同時読み込みで後半が読み込まれなくなる問題への対策)
-    function scheduleAssign(member, frameIndex) {
-        assignQueue = assignQueue.filter((q) => q.member !== member); // 古い予約は上書き
-        assignQueue.push({ member, frameIndex });
-        pumpAssignQueue();
-    }
-
-    function pumpAssignQueue() {
-        if (assignTimer) return;
-        const step = () => {
-            assignTimer = null;
-            const job = assignQueue.shift();
-            if (job && job.member !== frontMember) { // 表示中メンバーはshowFrameが直接管理
-                assignMember(job.member, job.frameIndex);
-            }
-            if (assignQueue.length > 0) {
-                assignTimer = setTimeout(step, ASSIGN_SPACING_MS);
-            }
-        };
-        assignTimer = setTimeout(step, 0);
-    }
-
-    // 「現在コマ i + 先の POOL_SIZE-1 コマ」がプール内に揃うよう割り当てる。
-    // すでに必要なコマを保持しているメンバーはそのまま再利用(読み直しを防ぐ)
-    function fillPoolAround(i) {
-        assignMember(frontMember, i);
-
-        const wanted = [];
-        for (let k = 1; k < POOL_SIZE; k++) {
-            if (frames[i + k]) wanted.push(i + k);
-        }
-        const others  = pool.filter((m) => m !== frontMember);
-        const missing = wanted.filter((idx) => !others.some((m) => m.frameIndex === idx));
-
-        for (const m of others) {
-            if (wanted.includes(m.frameIndex)) continue; // 必要なコマを保持中 → 温存
-            const idx = missing.shift();
-            if (idx === undefined) continue;
-            scheduleAssign(m, idx); // ★ 一斉ではなく順次読み込み
-        }
-    }
-
-    // 指定メンバーを最前面に出す(旧frontはmidとして直下に残しクロスフェード)
-    function bringToFront(member) {
-        if (member === frontMember) return;
-        const oldFront = frontMember;
-        pool.forEach((m) => m.el.classList.remove("front", "mid", "back"));
-        member.el.classList.add("front");
-        oldFront.el.classList.add("mid");
-        pool.forEach((m) => {
-            if (m !== member && m !== oldFront) m.el.classList.add("back");
-        });
-        frontMember = member;
-        panorama = member.pano; // 外部参照用のグローバルも更新
-        // ★ 裏で描画が止まっていた場合に備えて再描画を強制
-        google.maps.event.trigger(member.pano, "resize");
-        map.setStreetView(member.pano);
-    }
-
-    function showFrame(index) {
+    async function showFrame(index) {
         const frame = frames[index];
         if (!frame) return;
 
-        // プール内に読み込み済みのメンバーがいればそれを表に出す
-        const ready = pool.find((m) => m.frameIndex === index);
-        if (ready) {
-            bringToFront(ready);
-        } else {
-            assignMember(frontMember, index); // フォールバック(シーク直後など)
-        }
-
         map.setCenter(frame.position);
         updateProgressMarker(frame.position);
-        applyPov(frame.baseHeading);
         updateUi();
-        fillPoolAround(index); // 窓をスライドして次のコマ群を先読み
+
+        const img = await fetchFrameImage(frame);
+        // 読み込み待ちの間に別コマへ進んでいたら破棄(前の画像が残る=黒画面は出ない)
+        if (index !== currentIndex || !img) return;
+        swapLayerTo(img.src);
     }
 
-    // 進行方向 + ユーザーオフセット でPOVを適用
-    function applyPov(baseHeading) {
-        currentBaseHeading = baseHeading;
-        const pov = frontMember.pano.getPov() || { heading: 0, pitch: 0 };
-        const heading = norm360(baseHeading + headingOffset);
-        expectedHeading = heading;
-        frontMember.pano.setPov({ heading, pitch: pov.pitch ?? 0 }); // pitchはユーザーの値を維持
+    function swapLayerTo(src) {
+        const back = imgLayers[1 - frontLayer];
+        back.src = src;
+        back.classList.remove("back");
+        back.classList.add("front");
+        const old = imgLayers[frontLayer];
+        old.classList.remove("front");
+        old.classList.add("back");
+        frontLayer = 1 - frontLayer;
     }
 
-    // 先読み中の全メンバーのPOVを「各コマの進行方向 + 現在のオフセット」に合わせる
-    // (ユーザーが横を向いていたら、次のコマも横向きの状態で読み込まれる)
-    function mirrorPoolPov() {
-        const pitch = frontMember?.pano.getPov()?.pitch ?? 0;
-        for (const m of pool) {
-            if (m === frontMember || m.frameIndex < 0 || !frames[m.frameIndex]) continue;
-            m.pano.setPov({
-                heading: norm360(frames[m.frameIndex].baseHeading + headingOffset),
-                pitch,
-            });
-        }
+    // 視点(PAN)変更後の表示更新: 現在コマを新しい向きで取り直し、先読みも更新
+    let povRefreshTimer = null;
+    function refreshPov() {
+        if (povRefreshTimer) return;
+        povRefreshTimer = setTimeout(async () => {
+            povRefreshTimer = null;
+            const frame = frames[currentIndex];
+            if (!frame) return;
+            const img = await fetchFrameImage(frame);
+            if (img && frame === frames[currentIndex]) swapLayerTo(img.src);
+            prefetchAhead(currentIndex + 1);
+            updateRecenterButton();
+        }, POV_REFRESH_MS);
     }
 
     function recenter() {
         headingOffset = 0;
-        applyPov(currentBaseHeading);
-        mirrorPoolPov();
+        pitchOffset = 0;
+        refreshPov();
         updateRecenterButton();
     }
 
-    function norm360(deg) {
-        return ((deg % 360) + 360) % 360;
+    // =========================================
+    //  ドラッグPAN & タップ再生/停止
+    // =========================================
+    function bindPointer() {
+        let downX = 0, downY = 0, downT = 0;
+        let dragging = false;
+        let lastX = 0, lastY = 0;
+
+        videoWrap.addEventListener("pointerdown", (e) => {
+            if (exploring) return;
+            downX = lastX = e.clientX;
+            downY = lastY = e.clientY;
+            downT = Date.now();
+            dragging = true;
+            videoWrap.setPointerCapture(e.pointerId);
+        });
+
+        videoWrap.addEventListener("pointermove", (e) => {
+            if (!dragging || exploring || frames.length === 0) return;
+            const rect = videoWrap.getBoundingClientRect();
+            const degPerPxH = STATIC_FOV / rect.width;
+            const degPerPxV = (STATIC_FOV * 0.66) / rect.height;
+            headingOffset -= (e.clientX - lastX) * degPerPxH;
+            pitchOffset   += (e.clientY - lastY) * degPerPxV;
+            pitchOffset = Math.max(-35, Math.min(35, pitchOffset));
+            lastX = e.clientX;
+            lastY = e.clientY;
+            refreshPov();
+        });
+
+        videoWrap.addEventListener("pointerup", (e) => {
+            dragging = false;
+            if (exploring || frames.length === 0) return;
+            const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
+            const elapsed = Date.now() - downT;
+            if (moved < 6 && elapsed < 400) {
+                if (e.target.closest("#sv-player-bar")) return;
+                if (e.target.closest("button, a, [role='button']")) return;
+                toggle();
+            } else {
+                prefetchAhead(currentIndex + 1); // ドラッグ終了 → 新しい向きで先読み
+            }
+        });
+
+        videoWrap.addEventListener("pointercancel", () => { dragging = false; });
+    }
+
+    // =========================================
+    //  🧭 見回しモード(インタラクティブSVに一時切替)
+    // =========================================
+    function openExplore() {
+        const frame = frames[currentIndex];
+        if (!frame) return;
+        pause(true);
+
+        if (!exploreEl) {
+            exploreEl = document.createElement("div");
+            exploreEl.id = "sv-explore";
+            const closeBtn = document.createElement("button");
+            closeBtn.id = "sv-explore-close";
+            closeBtn.textContent = "✕ 動画に戻る";
+            closeBtn.addEventListener("click", () => closeExplore());
+            const inner = document.createElement("div");
+            inner.id = "sv-explore-pano";
+            exploreEl.append(inner, closeBtn);
+            videoWrap.appendChild(exploreEl);
+            explorePano = new google.maps.StreetViewPanorama(inner, {
+                pov: { heading: 0, pitch: 0 },
+                zoom: 1,
+                addressControl: false,
+                motionTracking: false,
+                motionTrackingControl: false,
+                fullscreenControl: false,
+            });
+        }
+
+        if (frame.panoId) explorePano.setPano(frame.panoId);
+        else explorePano.setPosition(frame.position);
+        explorePano.setPov({
+            heading: ((frame.baseHeading + headingOffset) % 360 + 360) % 360,
+            pitch: Math.max(-35, Math.min(35, pitchOffset)),
+        });
+
+        exploreEl.style.display = "block";
+        exploring = true;
+        google.maps.event.trigger(explorePano, "resize");
+        updateUi();
+    }
+
+    // 見回しで変えた向きを動画側に引き継いで閉じる
+    function closeExplore(applyPov = true) {
+        if (!exploring) return;
+        exploring = false;
+        if (applyPov && explorePano && frames[currentIndex]) {
+            const pov = explorePano.getPov();
+            if (pov) {
+                headingOffset = normalizeDeg(pov.heading - frames[currentIndex].baseHeading);
+                pitchOffset = Math.max(-35, Math.min(35, pov.pitch ?? 0));
+                refreshPov();
+            }
+        }
+        if (exploreEl) exploreEl.style.display = "none";
+        updateUi();
     }
 
     function normalizeDeg(deg) {
@@ -894,30 +983,63 @@ const SvPlayer = (() => {
     }
 
     // =========================================
-    //  プレイヤーバー UI
+    //  UI構築
     // =========================================
+    function buildVideoLayers() {
+        videoWrap = document.getElementById("street-view");
+        if (!videoWrap) return;
+        for (let k = 0; k < 2; k++) {
+            const img = document.createElement("img");
+            img.className = "sv-pane " + (k === 0 ? "front" : "back");
+            img.alt = "";
+            img.draggable = false;
+            videoWrap.appendChild(img);
+            imgLayers.push(img);
+        }
+        frontLayer = 0;
+    }
+
     function injectStyles() {
         const css = `
-        /* パノラマプール(表:front / 直下:mid / その他:back)
-           ※ 裏のパネルも常に opacity:1 のまま重ねる(透明にすると
-              ブラウザ/APIが描画・読み込みを止めることがあるため) */
-        .sv-pane {
+        #street-view { background: #0a0e1a; touch-action: none; user-select: none; }
+        /* 画像レイヤー(表:front / 裏:back) */
+        img.sv-pane {
             position: absolute;
             inset: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
             opacity: 1;
         }
-        .sv-pane.front { z-index: 3; animation: svFadeIn 0.25s ease; }
-        .sv-pane.mid   { z-index: 2; pointer-events: none; }
-        .sv-pane.back  { z-index: 1; pointer-events: none; }
-        @keyframes svFadeIn {
-            from { opacity: 0; }
-            to   { opacity: 1; }
-        }
+        .sv-pane.front { z-index: 3; animation: svFadeIn 0.22s ease; }
+        .sv-pane.back  { z-index: 1; }
+        @keyframes svFadeIn { from { opacity: 0; } to { opacity: 1; } }
         .sv-tap-hint { z-index: 21; }
+        /* 見回しモード */
+        #sv-explore {
+            position: absolute;
+            inset: 0;
+            z-index: 24;
+            display: none;
+        }
+        #sv-explore-pano { position: absolute; inset: 0; }
+        #sv-explore-close {
+            position: absolute;
+            top: 10px; left: 10px;
+            z-index: 26;
+            background: rgba(10,14,26,0.85);
+            color: #00d4ff;
+            border: 1px solid rgba(0,212,255,0.4);
+            border-radius: 8px;
+            padding: 7px 14px;
+            font-size: 0.8rem;
+            font-weight: 700;
+            cursor: pointer;
+        }
         #sv-player-bar {
             position: absolute;
             left: 10px; right: 10px; bottom: 10px;
-            z-index: 20;
+            z-index: 25;
             display: none;
             align-items: center;
             gap: 8px;
@@ -985,7 +1107,7 @@ const SvPlayer = (() => {
             0%   { opacity: 0.95; transform: translate(-50%, -50%) scale(0.8); }
             100% { opacity: 0;    transform: translate(-50%, -50%) scale(1.5); }
         }
-        /* 旧オーバーレイはPAN操作を妨げるため無効化 */
+        /* 旧オーバーレイは無効化 */
         #sv-tap-overlay { pointer-events: none !important; display: none !important; }
         @media (max-width: 520px) {
             #sv-player-bar { flex-wrap: wrap; gap: 6px; padding: 7px 9px; }
@@ -1016,6 +1138,7 @@ const SvPlayer = (() => {
                 <option value="3">3x</option>
             </select>
             <button id="sv-recenter" title="進行方向に視点を戻す">⌖</button>
+            <button id="sv-explore-btn" title="この地点を自由に見回す">🧭</button>
         `;
         svWrap.appendChild(bar);
 
@@ -1033,10 +1156,10 @@ const SvPlayer = (() => {
             counter:  bar.querySelector("#sv-counter"),
             speedSel: bar.querySelector("#sv-speed"),
             recenter: bar.querySelector("#sv-recenter"),
+            explore:  bar.querySelector("#sv-explore-btn"),
         };
 
-        // バー内の操作がタップ再生/停止トグルに伝播しないように
-        ["click", "pointerdown", "pointerup", "touchstart"].forEach((ev) =>
+        ["click", "pointerdown", "pointerup", "pointermove", "touchstart"].forEach((ev) =>
             bar.addEventListener(ev, (e) => e.stopPropagation())
         );
 
@@ -1046,6 +1169,7 @@ const SvPlayer = (() => {
         ui.seek.addEventListener("input", () => seekTo(parseInt(ui.seek.value, 10)));
         ui.speedSel.addEventListener("change", () => setSpeed(parseFloat(ui.speedSel.value)));
         ui.recenter.addEventListener("click", recenter);
+        ui.explore.addEventListener("click", () => (exploring ? closeExplore() : openExplore()));
     }
 
     function setBarVisible(visible) {
@@ -1062,52 +1186,28 @@ const SvPlayer = (() => {
         ui.counter.textContent = total > 0 ? `${currentIndex + 1} / ${total}` : "- / -";
         ui.prev.disabled = total === 0 || currentIndex <= 0;
         ui.next.disabled = total === 0 || currentIndex >= total - 1;
+        ui.explore.disabled = total === 0;
+        ui.explore.classList.toggle("active", exploring);
     }
 
     function updateRecenterButton() {
         if (!ui.recenter) return;
-        ui.recenter.classList.toggle("active", Math.abs(headingOffset) > 5);
+        ui.recenter.classList.toggle(
+            "active",
+            Math.abs(headingOffset) > 5 || Math.abs(pitchOffset) > 5
+        );
     }
 
-    function setPrepProgress(ratio) {
-        if (!ui.counter) return;
-        if (ratio === null) { updateUi(); return; }
-        ui.counter.textContent = `解析中 ${Math.round(ratio * 100)}%`;
+    function setCounterText(text) {
+        if (ui.counter) ui.counter.textContent = text;
     }
 
     function flashIcon(icon) {
         if (!ui.flash) return;
         ui.flash.textContent = icon;
         ui.flash.classList.remove("flash");
-        void ui.flash.offsetWidth; // reflowでアニメーション再発火
+        void ui.flash.offsetWidth;
         ui.flash.classList.add("flash");
-    }
-
-    // =========================================
-    //  タップで再生/一時停止(ドラッグPANとは区別)
-    // =========================================
-    function bindTapToggle() {
-        const svWrap = document.getElementById("street-view");
-        if (!svWrap) return;
-
-        let downX = 0, downY = 0, downT = 0;
-
-        svWrap.addEventListener("pointerdown", (e) => {
-            downX = e.clientX; downY = e.clientY; downT = Date.now();
-        }, true);
-
-        svWrap.addEventListener("pointerup", (e) => {
-            if (frames.length === 0) return;
-            const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
-            const elapsed = Date.now() - downT;
-            // 動かさず短くタップした場合のみトグル(ドラッグ=PAN操作は無視)
-            if (moved < 6 && elapsed < 400) {
-                // プレイヤーバーやGoogle標準UIのクリックは除外
-                if (e.target.closest("#sv-player-bar")) return;
-                if (e.target.closest("button, a, [role='button']")) return;
-                toggle();
-            }
-        }, true);
     }
 
     // =========================================
@@ -1128,12 +1228,14 @@ const SvPlayer = (() => {
             } else if (e.code === "ArrowLeft" && e.shiftKey) {
                 e.preventDefault();
                 seekTo(currentIndex - 1);
+            } else if (e.code === "Escape" && exploring) {
+                closeExplore();
             }
         });
     }
 
     // ---- 公開API ----
-    return { init, initPanoramas, start, play, pause, toggle, seekTo, setSpeed, reset, onRouteChanged };
+    return { init, start, play, pause, toggle, seekTo, setSpeed, reset, onRouteChanged };
 })();
 
 // =============================================
