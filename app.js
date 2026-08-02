@@ -1270,8 +1270,8 @@ const SvPlayer = (() => {
             <span   id="sv-counter">- / -</span>
             <select id="sv-speed" title="再生速度">
                 <option value="0.5">0.5x</option>
-                <option value="1" selected>1x</option>
-                <option value="1.5">1.5x</option>
+                <option value="1">1x</option>
+                <option value="1.5" selected>1.5x</option>
                 <option value="2">2x</option>
                 <option value="3">3x</option>
             </select>
