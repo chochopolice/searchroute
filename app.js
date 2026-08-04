@@ -38,6 +38,87 @@ const RANDOM_END_RADIUS_M    = 20000;
 const RANDOM_SV_RADIUS_M     = 2000;
 
 // =============================================
+//  🏁 おすすめ絶景ドライブコース プリセット
+//  座標は道路上のおおよその位置。sv:false はストリートビュー
+//  非対応エリア(中国など)を示す
+// =============================================
+const DRIVE_PRESETS = [
+    {
+        group: "海上を走る絶景の橋",
+        name: "① アトランティック・ロード(ノルウェー)",
+        note: "約8.3km / 8つの橋が小島と岩礁をつなぐ名道",
+        start: { lat: 63.0182, lng: 7.3894 },
+        via:   [{ lat: 63.0128, lng: 7.3527 }],
+        end:   { lat: 62.9825, lng: 7.2846 },
+    },
+    {
+        group: "海上を走る絶景の橋",
+        name: "② セブンマイル・ブリッジ(米・フロリダ)",
+        note: "約10.9km / 両側エメラルドグリーンの海上ストレート",
+        start: { lat: 24.7106, lng: -81.1130 },
+        end:   { lat: 24.6845, lng: -81.2280 },
+    },
+    {
+        group: "海上を走る絶景の橋",
+        name: "③ 角島大橋(日本・山口県)",
+        note: "約1.78km / コバルトブルーの海へ伸びる絶景ショート",
+        start: { lat: 34.3455, lng: 130.9010 },
+        end:   { lat: 34.3561, lng: 130.8867 },
+    },
+    {
+        group: "崖っぷちを駆け抜ける",
+        name: "④ チャップマンズ・ピーク(南アフリカ)",
+        note: "約9km / 断崖と大西洋に挟まれた114カーブ",
+        start: { lat: -34.0503, lng: 18.3585 },
+        via:   [{ lat: -34.0800, lng: 18.3565 }],
+        end:   { lat: -34.1108, lng: 18.3690 },
+    },
+    {
+        group: "崖っぷちを駆け抜ける",
+        name: "⑤ コンブ・ラヴァル(フランス)",
+        note: "約12.5km / 石灰岩の絶壁を削ったバルコニー・ロード",
+        start: { lat: 45.0181, lng: 5.2925 },
+        end:   { lat: 44.9997, lng: 5.3603 },
+    },
+    {
+        group: "崖っぷちを駆け抜ける",
+        name: "⑥ 郭亮洞(中国・河南省)",
+        note: "約1.2km / 手掘りの断崖トンネル ※中国はSV非対応",
+        start: { lat: 35.8697, lng: 113.6906 },
+        end:   { lat: 35.8760, lng: 113.6960 },
+        sv: false,
+    },
+    {
+        group: "ワインディング・山岳",
+        name: "⑦ トロルスティーゲン(ノルウェー)",
+        note: "約10km / 11のヘアピンでフィヨルドを下る",
+        start: { lat: 62.4576, lng: 7.6706 },
+        end:   { lat: 62.4820, lng: 7.6830 },
+    },
+    {
+        group: "ワインディング・山岳",
+        name: "⑧ サ・カロブラ(スペイン・マヨルカ島)",
+        note: "約13km / 270度ループ「ネクタイ結び」が名物",
+        start: { lat: 39.8203, lng: 2.8264 },
+        end:   { lat: 39.8492, lng: 2.8007 },
+    },
+    {
+        group: "ワインディング・山岳",
+        name: "⑨ ジェベル・ハフィート(UAE)",
+        note: "約10.7km / 高低差680mを駆け上がる全60カーブ",
+        start: { lat: 24.1069, lng: 55.7647 },
+        end:   { lat: 24.0577, lng: 55.7799 },
+    },
+    {
+        group: "ワインディング・山岳",
+        name: "⑩ テイル・オブ・ザ・ドラゴン(米・US129)",
+        note: "約17.7km / 11マイルに318カーブが凝縮",
+        start: { lat: 35.4636, lng: -83.9264 },
+        end:   { lat: 35.5583, lng: -83.9345 },
+    },
+];
+
+// =============================================
 //  JSエラーの画面表示(サイレントな停止を可視化)
 // =============================================
 window.addEventListener("error", (e) => {
@@ -180,11 +261,79 @@ function initMap() {
 
     locationButton.addEventListener('click', getCurrentLocation);
 
+    // ★ おすすめドライブコースのプルダウンを構築
+    setupPresetSelector();
+
     // ★ プレイヤーUI(シークバー等)を注入して初期化
     SvPlayer.init();
 
     updateRouteInfo();
     updateButtonStates();
+}
+
+// =============================================
+//  🏁 おすすめドライブコース
+// =============================================
+function setupPresetSelector() {
+    const sel  = document.getElementById("preset-course");
+    const note = document.getElementById("preset-note");
+    if (!sel) return;
+
+    // グループごとに <optgroup> でまとめる
+    const groups = {};
+    DRIVE_PRESETS.forEach((p, i) => {
+        (groups[p.group] = groups[p.group] || []).push({ p, i });
+    });
+    Object.entries(groups).forEach(([groupName, items]) => {
+        const og = document.createElement("optgroup");
+        og.label = groupName;
+        items.forEach(({ p, i }) => {
+            const opt = document.createElement("option");
+            opt.value = String(i);
+            opt.textContent = p.name;
+            og.appendChild(opt);
+        });
+        sel.appendChild(og);
+    });
+
+    sel.addEventListener("change", () => {
+        if (sel.value === "") { if (note) note.textContent = ""; return; }
+        const preset = DRIVE_PRESETS[parseInt(sel.value, 10)];
+        if (note) note.textContent = preset.note;
+        applyPreset(preset);
+    });
+}
+
+function applyPreset(preset) {
+    SvPlayer.reset();
+
+    startLocation = new google.maps.LatLng(preset.start.lat, preset.start.lng);
+    endLocation   = new google.maps.LatLng(preset.end.lat, preset.end.lng);
+    waypoints = (preset.via || []).map((v) => ({
+        location: new google.maps.LatLng(v.lat, v.lng),
+        stopover: true,
+    }));
+    refreshWaypointMarkers();
+    createMarker(startLocation);
+
+    // 経路全体が見えるように地図を合わせる
+    const bounds = new google.maps.LatLngBounds();
+    bounds.extend(startLocation);
+    bounds.extend(endLocation);
+    waypoints.forEach((w) => bounds.extend(w.location));
+    map.fitBounds(bounds);
+
+    updateRouteInfo();
+    updateButtonStates();
+
+    if (preset.sv === false) {
+        alert(
+            `${preset.name}\n\n` +
+            "このエリアはGoogleストリートビューが提供されていないため、\n" +
+            "経路は表示できても走行映像は再生できない可能性があります。"
+        );
+    }
+    calculateRoute();
 }
 
 // =============================================
@@ -430,25 +579,37 @@ function requestRoute(origin, destination, travelMode) {
 //  経路検索
 // =============================================
 function calculateRoute() {
-    directionsService.route(
-        {
-            origin: startLocation,
-            destination: endLocation,
-            waypoints,
-            optimizeWaypoints: false,
-            travelMode: google.maps.TravelMode.DRIVING,
-        },
-        (response, status) => {
-            if (status === google.maps.DirectionsStatus.OK) {
-                directionsRenderer.setDirections(response);
-                route = extractRouteCoordinates(response);
-                SvPlayer.onRouteChanged();
-                updateButtonStates();
-            } else {
-                alert("経路情報を取得できませんでした: " + status);
-            }
+    const request = {
+        origin: startLocation,
+        destination: endLocation,
+        waypoints,
+        optimizeWaypoints: false,
+        travelMode: google.maps.TravelMode.DRIVING,
+    };
+    directionsService.route(request, (response, status) => {
+        if (status === google.maps.DirectionsStatus.OK) {
+            applyRouteResponse(response);
+            return;
         }
-    );
+        // 車で経路が出ない場合は徒歩でフォールバック(山道・私道など)
+        directionsService.route(
+            { ...request, travelMode: google.maps.TravelMode.WALKING },
+            (res2, st2) => {
+                if (st2 === google.maps.DirectionsStatus.OK) {
+                    applyRouteResponse(res2);
+                } else {
+                    alert("経路情報を取得できませんでした: " + status);
+                }
+            }
+        );
+    });
+}
+
+function applyRouteResponse(response) {
+    directionsRenderer.setDirections(response);
+    route = extractRouteCoordinates(response);
+    SvPlayer.onRouteChanged();
+    updateButtonStates();
 }
 
 function extractRouteCoordinates(response) {
@@ -1084,6 +1245,23 @@ const SvPlayer = (() => {
 
     function injectStyles() {
         const css = `
+        /* おすすめコース選択 */
+        #preset-row { align-items: center; gap: 10px; flex-wrap: wrap; }
+        #preset-course {
+            background: rgba(26,34,54,0.9);
+            color: #e0eaf8;
+            border: 1px solid rgba(0,212,255,0.35);
+            border-radius: 8px;
+            font-size: 0.8rem;
+            padding: 7px 10px;
+            cursor: pointer;
+            min-width: 260px;
+            max-width: 100%;
+            font-family: 'Noto Sans JP', sans-serif;
+        }
+        #preset-course:focus { outline: none; border-color: #00d4ff; }
+        #preset-course optgroup { color: #7a90b0; background: #111827; }
+        #preset-course option { color: #e0eaf8; background: #111827; }
         #street-view { background: #0a0e1a; touch-action: none; user-select: none; }
         /* 画像レイヤー(表:front / 裏:back) */
         img.sv-pane {
