@@ -30,7 +30,7 @@ const PREFETCH_AHEAD      = 8;         // 視点変更後に先読みするコ�
 const IMG_CONCURRENCY     = 6;         // 画像の同時読み込み数
 const POV_REFRESH_MS      = 140;       // ドラッグ中の画像更新間隔
 const PRELOAD_CONFIRM_OVER = 300;      // このコマ数を超える全読込は確認ダイアログを出す
-const FRAME_LOAD_LIMIT    = 500;       // このコマ数以上は画像読み込みを停止する
+const FRAME_LOAD_LIMIT    = 1500;       // このコマ数以上は画像読み込みを停止する
 
 const RANDOM_ROUTE_MIN_KM    = 5;
 const RANDOM_ROUTE_MAX_KM    = 50;
