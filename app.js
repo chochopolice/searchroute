@@ -28,9 +28,9 @@ const STATIC_FOV          = 90;        // 視野角(小さいほどズーム)
 const HEADING_STEP        = 5;         // PAN操作の角度刻み(画像キャッシュ単位)
 const PREFETCH_AHEAD      = 8;         // 視点変更後に先読みするコマ数
 const IMG_CONCURRENCY     = 6;         // 画像の同時読み込み数
+const FAIL_RATE_THRESHOLD = 0.9;       // この割合以上のコマが失敗したらAPI設定の問題として診断表示
 const POV_REFRESH_MS      = 140;       // ドラッグ中の画像更新間隔
 const PRELOAD_CONFIRM_OVER = 300;      // このコマ数を超える全読込は確認ダイアログを出す
-const FRAME_LOAD_LIMIT    = 1500;       // このコマ数以上は画像読み込みを停止する
 
 const RANDOM_ROUTE_MIN_KM    = 5;
 const RANDOM_ROUTE_MAX_KM    = 50;
@@ -732,16 +732,6 @@ const SvPlayer = (() => {
 
         if (frames.length === 0) { preparing = false; return false; }
 
-        if (frames.length >= FRAME_LOAD_LIMIT) {
-            preparing = false;
-            setCounterText("読込停止");
-            alert(
-                `${frames.length}コマの経路は読み込み上限（${FRAME_LOAD_LIMIT - 1}コマ）を超えているため、` +
-                "画像の読み込みを停止しました。"
-            );
-            return false;
-        }
-
         if (frames.length > PANO_PREP_MAX) {
             framesDirty = false;
             prepared = true;
@@ -909,19 +899,22 @@ const SvPlayer = (() => {
                 if (done % 3 === 0 || done === total) {
                     setCounterText(`読込 ${Math.round((done / total) * 100)}%`);
                 }
-                // 最初の数枚が全滅ならAPI未有効の可能性大 → 即中断して案内
-                if (done >= 5 && errors >= done) {
-                    showDiagnostic();
-                    return false;
-                }
             }
         });
         await Promise.all(workers);
 
         if (myToken !== prepToken) return false;
-        if (errors > 0 && errors >= total * 0.5) {
+
+        // 全コマを読み込み終えてから判定する。
+        // 一部のコマが取得できないのは通常のこと(第三者投稿パノラマ、SV空白地帯など)なので、
+        // 大半が失敗した場合のみAPI設定の問題として診断パネルを表示する
+        const failRate = total > 0 ? errors / total : 0;
+        if (failRate >= FAIL_RATE_THRESHOLD) {
             showDiagnostic();
             return false;
+        }
+        if (errors > 0) {
+            console.warn(`[SvPlayer] ${total}コマ中${errors}コマが取得できませんでした(スキップして再生します)`);
         }
         preloadDone = true;
         return true;
