@@ -1,0 +1,1598 @@
+// =============================================
+//  Google Maps ストリートビュー 散歩アプリ
+//  v3: 動画風プレイヤー(Static API静止画シーケンス方式)
+// =============================================
+
+// --- グローバル変数 ---
+let geocoder;
+let map;
+let marker = null;
+let startLocation = null;
+let endLocation = null;
+let waypoints = [];
+let waypointMarkers = [];
+let directionsService, directionsRenderer;
+let route = [];
+
+// --- 設定値 ---
+const LOOKAHEAD_POINTS  = 2;      // 何ポイント先を向くか
+const BASE_INTERVAL_MS  = 2000;   // 等速(1x)時のフレーム間隔
+const ROUTE_SAMPLE_RATE = 2;      // 経路ポイントの間引き率(小さいほど高密度=滑らか)
+
+const PANO_PREP_MAX         = 800; // これ以下のポイント数ならパノラマ解決+重複除去を行う
+const PANO_PREP_CONCURRENCY = 3;   // パノラマ解決の同時リクエスト数(多いとレート制限に触れる)
+
+// --- Static API 静止画シーケンス設定 ---
+const STATIC_SIZE         = "640x400"; // 取得画像サイズ(Static APIの上限は640x640)
+const STATIC_FOV          = 90;        // 視野角(小さいほどズーム)
+const HEADING_STEP        = 5;         // PAN操作の角度刻み(画像キャッシュ単位)
+const PREFETCH_AHEAD      = 8;         // 視点変更後に先読みするコマ数
+const IMG_CONCURRENCY     = 2;         // 画像の同時読み込み数(多いとGoogleにレート制限で弾かれる)
+const IMG_REQUEST_GAP_MS  = 60;        // 各画像リクエストの最小間隔(レート制限回避)
+const IMG_RETRY_MAX       = 3;         // 失敗した画像の再試行回数
+const IMG_RETRY_BASE_MS   = 700;       // 再試行の待ち時間(指数バックオフの基準)
+const FAIL_RATE_THRESHOLD = 0.9;       // この割合以上のコマが失敗したらAPI設定の問題として診断表示
+const POV_REFRESH_MS      = 140;       // ドラッグ中の画像更新間隔
+const PRELOAD_CONFIRM_OVER = 300;      // このコマ数を超える全読込は確認ダイアログを出す
+
+const RANDOM_ROUTE_MIN_KM    = 5;
+const RANDOM_ROUTE_MAX_KM    = 50;
+const RANDOM_ROUTE_MAX_TRIES = 60;
+const RANDOM_END_RADIUS_M    = 20000;
+const RANDOM_SV_RADIUS_M     = 2000;
+
+// =============================================
+//  🏁 おすすめ絶景ドライブコース プリセット
+//  座標は道路上のおおよその位置。sv:false はストリートビュー
+//  非対応エリア(中国など)を示す
+// =============================================
+const DRIVE_PRESETS = [
+    {
+        group: "海上を走る絶景の橋",
+        name: "① アトランティック・ロード(ノルウェー)",
+        note: "約8.3km / 8つの橋が小島と岩礁をつなぐ名道",
+        start: { lat: 63.0182, lng: 7.3894 },
+        via:   [{ lat: 63.0128, lng: 7.3527 }],
+        end:   { lat: 62.9825, lng: 7.2846 },
+    },
+    {
+        group: "海上を走る絶景の橋",
+        name: "② セブンマイル・ブリッジ(米・フロリダ)",
+        note: "約10.9km / 両側エメラルドグリーンの海上ストレート",
+        start: { lat: 24.7106, lng: -81.1130 },
+        end:   { lat: 24.6845, lng: -81.2280 },
+    },
+    {
+        group: "海上を走る絶景の橋",
+        name: "③ 角島大橋(日本・山口県)",
+        note: "約1.78km / コバルトブルーの海へ伸びる絶景ショート",
+        start: { lat: 34.3455, lng: 130.9010 },
+        end:   { lat: 34.3561, lng: 130.8867 },
+    },
+    {
+        group: "崖っぷちを駆け抜ける",
+        name: "④ チャップマンズ・ピーク(南アフリカ)",
+        note: "約9km / 断崖と大西洋に挟まれた114カーブ",
+        start: { lat: -34.0503, lng: 18.3585 },
+        via:   [{ lat: -34.0800, lng: 18.3565 }],
+        end:   { lat: -34.1108, lng: 18.3690 },
+    },
+    {
+        group: "崖っぷちを駆け抜ける",
+        name: "⑤ コンブ・ラヴァル(フランス)",
+        note: "約12.5km / 石灰岩の絶壁を削ったバルコニー・ロード",
+        start: { lat: 45.0181, lng: 5.2925 },
+        end:   { lat: 44.9997, lng: 5.3603 },
+    },
+    {
+        group: "崖っぷちを駆け抜ける",
+        name: "⑥ 郭亮洞(中国・河南省)",
+        note: "約1.2km / 手掘りの断崖トンネル ※中国はSV非対応",
+        start: { lat: 35.8697, lng: 113.6906 },
+        end:   { lat: 35.8760, lng: 113.6960 },
+        sv: false,
+    },
+    {
+        group: "ワインディング・山岳",
+        name: "⑦ トロルスティーゲン(ノルウェー)",
+        note: "約10km / 11のヘアピンでフィヨルドを下る",
+        start: { lat: 62.4576, lng: 7.6706 },
+        end:   { lat: 62.4820, lng: 7.6830 },
+    },
+    {
+        group: "ワインディング・山岳",
+        name: "⑧ サ・カロブラ(スペイン・マヨルカ島)",
+        note: "約13km / 270度ループ「ネクタイ結び」が名物",
+        start: { lat: 39.8203, lng: 2.8264 },
+        end:   { lat: 39.8492, lng: 2.8007 },
+    },
+    {
+        group: "ワインディング・山岳",
+        name: "⑨ ジェベル・ハフィート(UAE)",
+        note: "約10.7km / 高低差680mを駆け上がる全60カーブ",
+        start: { lat: 24.1069, lng: 55.7647 },
+        end:   { lat: 24.0577, lng: 55.7799 },
+    },
+    {
+        group: "ワインディング・山岳",
+        name: "⑩ テイル・オブ・ザ・ドラゴン(米・US129)",
+        note: "約17.7km / 11マイルに318カーブが凝縮",
+        start: { lat: 35.4636, lng: -83.9264 },
+        end:   { lat: 35.5583, lng: -83.9345 },
+    },
+];
+
+// =============================================
+//  JSエラーの画面表示(サイレントな停止を可視化)
+// =============================================
+window.addEventListener("error", (e) => {
+    try {
+        if (!document.body) return;
+        let bar = document.getElementById("sv-jserror");
+        if (!bar) {
+            bar = document.createElement("div");
+            bar.id = "sv-jserror";
+            bar.style.cssText =
+                "position:fixed;top:0;left:0;right:0;z-index:9999;" +
+                "background:#7f1d1d;color:#fff;font-size:12px;" +
+                "padding:8px 12px;font-family:monospace;white-space:pre-wrap;";
+            document.body.appendChild(bar);
+        }
+        const file = (e.filename || "").split("/").pop();
+        bar.textContent = `⚠ JSエラー: ${e.message} (${file}:${e.lineno})`;
+    } catch (_) { /* noop */ }
+});
+
+// =============================================
+//  初期化
+// =============================================
+function initMap() {
+    const begin = { lat: 35.681236, lng: 139.767125 };
+
+    map = new google.maps.Map(document.getElementById("map"), {
+        center: begin,
+        zoom: 16,
+    });
+
+
+    directionsService  = new google.maps.DirectionsService();
+    directionsRenderer = new google.maps.DirectionsRenderer();
+    directionsRenderer.setMap(map);
+    geocoder = new google.maps.Geocoder();
+
+    map.addListener("click", (event) => createMarker(event.latLng));
+
+    const autocomplete = new google.maps.places.Autocomplete(
+        document.getElementById("location-input")
+    );
+    document.getElementById("search-location").addEventListener("click", () => {
+        const place = autocomplete.getPlace();
+        if (!place || !place.geometry) { alert("有効な地点を選択してください。"); return; }
+        const pos = place.geometry.location;
+        map.setCenter(pos);
+        map.setZoom(16);
+        createMarker(pos);
+    });
+
+    document.getElementById("set-start").addEventListener("click", () => {
+        if (!assertMarkerExists()) return;
+        startLocation = marker.getPosition();
+        alert("起点が設定されました。");
+        updateRouteInfo();
+        updateButtonStates();
+    });
+
+    document.getElementById("set-end").addEventListener("click", () => {
+        if (!assertMarkerExists()) return;
+        endLocation = marker.getPosition();
+        alert("終点が設定されました。");
+        updateRouteInfo();
+        updateButtonStates();
+    });
+
+    document.getElementById("add-waypoint").addEventListener("click", () => {
+        if (!assertMarkerExists()) return;
+        waypoints.push({ location: marker.getPosition(), stopover: true });
+        refreshWaypointMarkers();
+        updateRouteInfo();
+        if (startLocation && endLocation) calculateRoute();
+    });
+
+    document.getElementById("clear-waypoints").addEventListener("click", () => {
+        waypoints = [];
+        refreshWaypointMarkers();
+        updateRouteInfo();
+        if (startLocation && endLocation) calculateRoute();
+    });
+
+    document.getElementById("search-route").addEventListener("click", () => {
+        if (!startLocation || !endLocation) { alert("起点と終点を設定してください。"); return; }
+        calculateRoute();
+    });
+
+    document.getElementById("swap-locations").addEventListener("click", () => {
+        if (!startLocation || !endLocation) { alert("起点または終点が設定されていません。"); return; }
+        [startLocation, endLocation] = [endLocation, startLocation];
+        waypoints.reverse();
+        refreshWaypointMarkers();
+        updateRouteInfo();
+        calculateRoute();
+    });
+
+    document.getElementById("start-streetview").addEventListener("click", () => {
+        if (route.length === 0) { alert("有効な経路がありません。"); return; }
+        SvPlayer.start();
+    });
+
+    // 既存の停止/再開ボタンはプレイヤーの一時停止/再生に接続
+    document.getElementById("stop-streetview").addEventListener("click",   () => SvPlayer.pause());
+    document.getElementById("resume-streetview").addEventListener("click", () => SvPlayer.play());
+
+    document.getElementById("random-world-route").addEventListener("click", async () => {
+        await generateRandomWorldRoute();
+    });
+
+    // =============================================
+    //  ★ 現在地取得
+    // =============================================
+    const locationButton = document.getElementById('locationButton');
+
+    function getCurrentLocation() {
+        if (!navigator.geolocation) {
+            alert('このブラウザでは位置情報が使えません。');
+            return;
+        }
+        locationButton.disabled = true;
+        locationButton.textContent = '取得中...';
+
+        navigator.geolocation.getCurrentPosition(
+            pos => {
+                const latLng = new google.maps.LatLng(pos.coords.latitude, pos.coords.longitude);
+                map.setCenter(latLng);
+                map.setZoom(16);
+                createMarker(latLng);
+                locationButton.disabled = false;
+                locationButton.textContent = '現在地取得';
+            },
+            () => {
+                alert('位置情報の取得に失敗しました。ブラウザの許可設定を確認してください。');
+                locationButton.disabled = false;
+                locationButton.textContent = '現在地取得';
+            },
+            { enableHighAccuracy: true, timeout: 8000 }
+        );
+    }
+
+    locationButton.addEventListener('click', getCurrentLocation);
+
+    // ★ おすすめドライブコースのプルダウンを構築
+    setupPresetSelector();
+
+    // ★ プレイヤーUI(シークバー等)を注入して初期化
+    SvPlayer.init();
+
+    updateRouteInfo();
+    updateButtonStates();
+}
+
+// =============================================
+//  🏁 おすすめドライブコース
+// =============================================
+function setupPresetSelector() {
+    const sel  = document.getElementById("preset-course");
+    const note = document.getElementById("preset-note");
+    if (!sel) return;
+
+    // グループごとに <optgroup> でまとめる
+    const groups = {};
+    DRIVE_PRESETS.forEach((p, i) => {
+        (groups[p.group] = groups[p.group] || []).push({ p, i });
+    });
+    Object.entries(groups).forEach(([groupName, items]) => {
+        const og = document.createElement("optgroup");
+        og.label = groupName;
+        items.forEach(({ p, i }) => {
+            const opt = document.createElement("option");
+            opt.value = String(i);
+            opt.textContent = p.name;
+            og.appendChild(opt);
+        });
+        sel.appendChild(og);
+    });
+
+    sel.addEventListener("change", () => {
+        if (sel.value === "") { if (note) note.textContent = ""; return; }
+        const preset = DRIVE_PRESETS[parseInt(sel.value, 10)];
+        if (note) note.textContent = preset.note;
+        applyPreset(preset);
+    });
+}
+
+function applyPreset(preset) {
+    SvPlayer.reset();
+
+    startLocation = new google.maps.LatLng(preset.start.lat, preset.start.lng);
+    endLocation   = new google.maps.LatLng(preset.end.lat, preset.end.lng);
+    waypoints = (preset.via || []).map((v) => ({
+        location: new google.maps.LatLng(v.lat, v.lng),
+        stopover: true,
+    }));
+    refreshWaypointMarkers();
+    createMarker(startLocation);
+
+    // 経路全体が見えるように地図を合わせる
+    const bounds = new google.maps.LatLngBounds();
+    bounds.extend(startLocation);
+    bounds.extend(endLocation);
+    waypoints.forEach((w) => bounds.extend(w.location));
+    map.fitBounds(bounds);
+
+    updateRouteInfo();
+    updateButtonStates();
+
+    if (preset.sv === false) {
+        alert(
+            `${preset.name}\n\n` +
+            "このエリアはGoogleストリートビューが提供されていないため、\n" +
+            "経路は表示できても走行映像は再生できない可能性があります。"
+        );
+    }
+    calculateRoute();
+}
+
+// =============================================
+//  マーカー
+// =============================================
+function createMarker(position) {
+    if (marker) marker.setMap(null);
+    marker = new google.maps.Marker({ position, map });
+}
+
+function assertMarkerExists() {
+    if (marker && marker.getPosition()) return true;
+    alert("地点を検索またはマップ上で指定してください。");
+    return false;
+}
+
+// =============================================
+//  経由地マーカー
+// =============================================
+function refreshWaypointMarkers() {
+    waypointMarkers.forEach((m) => m.setMap(null));
+    waypointMarkers = [];
+    waypoints.forEach((w, i) => {
+        waypointMarkers.push(new google.maps.Marker({
+            position: w.location, map, label: `${i + 1}`
+        }));
+    });
+}
+
+// =============================================
+//  ボタン状態管理
+// =============================================
+function updateButtonStates() {
+    const hasEnds = !!(startLocation && endLocation);
+    document.getElementById("search-route").disabled     = !hasEnds;
+    document.getElementById("swap-locations").disabled   = !hasEnds;
+    document.getElementById("start-streetview").disabled = route.length === 0;
+}
+
+// =============================================
+//  住所逆引き
+// =============================================
+function reverseGeocodeLatLng(latLng) {
+    return new Promise((resolve) => {
+        if (!geocoder) return resolve(null);
+        geocoder.geocode({ location: latLng }, (results, status) => {
+            resolve(status === "OK" && results.length > 0 ? results[0].formatted_address : null);
+        });
+    });
+}
+
+// =============================================
+//  ルート情報パネル更新
+// =============================================
+async function updateRouteInfo() {
+    const startEl = document.getElementById("start-view");
+    const endEl   = document.getElementById("end-view");
+
+    if (startEl) startEl.textContent = startLocation ? "取得中…" : "未設定";
+    if (endEl)   endEl.textContent   = endLocation   ? "取得中…" : "未設定";
+
+    if (startLocation && startEl) {
+        const addr = await reverseGeocodeLatLng(startLocation);
+        startEl.textContent = addr || `${startLocation.lat().toFixed(6)}, ${startLocation.lng().toFixed(6)}`;
+    }
+    if (endLocation && endEl) {
+        const addr = await reverseGeocodeLatLng(endLocation);
+        endEl.textContent = addr || `${endLocation.lat().toFixed(6)}, ${endLocation.lng().toFixed(6)}`;
+    }
+
+    // 経由地リストを #waypoints-list に縦並びで描画
+    const listEl = document.getElementById("waypoints-list");
+    if (!listEl) return;
+    listEl.innerHTML = "";
+
+    for (let i = 0; i < waypoints.length; i++) {
+        const addr  = await reverseGeocodeLatLng(waypoints[i].location);
+        const label = addr || `${waypoints[i].location.lat().toFixed(6)}, ${waypoints[i].location.lng().toFixed(6)}`;
+
+        const item = document.createElement("div");
+        item.className = "waypoint-item";
+
+        const wpLabel = document.createElement("span");
+        wpLabel.className = "wp-label";
+        wpLabel.innerHTML = `<span class="dot"></span>経由地${i + 1}`;
+
+        const wpValue = document.createElement("span");
+        wpValue.className = "wp-value";
+        wpValue.textContent = label;
+
+        const btns = document.createElement("div");
+        btns.className = "wp-btns";
+        btns.append(
+            createWaypointButton("↑", i === 0,                    () => moveWaypoint(i, i - 1)),
+            createWaypointButton("↓", i === waypoints.length - 1, () => moveWaypoint(i, i + 1)),
+            createWaypointButton("×", false,                       () => deleteWaypoint(i))
+        );
+
+        item.append(wpLabel, wpValue, btns);
+        listEl.appendChild(item);
+    }
+}
+
+function createWaypointButton(label, disabled, onClick) {
+    const btn = document.createElement("button");
+    btn.textContent = label;
+    btn.disabled    = disabled;
+    btn.addEventListener("click", onClick);
+    return btn;
+}
+
+// =============================================
+//  経由地操作
+// =============================================
+function deleteWaypoint(index) {
+    waypoints.splice(index, 1);
+    refreshWaypointMarkers();
+    updateRouteInfo();
+    if (startLocation && endLocation) calculateRoute();
+}
+
+function moveWaypoint(from, to) {
+    if (to < 0 || to >= waypoints.length) return;
+    const [item] = waypoints.splice(from, 1);
+    waypoints.splice(to, 0, item);
+    refreshWaypointMarkers();
+    updateRouteInfo();
+    if (startLocation && endLocation) calculateRoute();
+}
+
+// =============================================
+//  Street View パノラマ取得
+// =============================================
+function getPanoramaAtPosition(latLng, radius) {
+    return new Promise((resolve) => {
+        const sv = new google.maps.StreetViewService();
+        sv.getPanorama(
+            { location: latLng, radius, source: google.maps.StreetViewSource.OUTDOOR },
+            (data, status) => resolve(status === google.maps.StreetViewStatus.OK ? data : null)
+        );
+    });
+}
+
+// =============================================
+//  世界ランダム経路
+// =============================================
+const SV_REGIONS = [
+    { latMin:  24, latMax:  46, lngMin: 123, lngMax: 146 },
+    { latMin:  25, latMax:  50, lngMin: -125, lngMax: -65 },
+    { latMin:  35, latMax:  71, lngMin:  -10, lngMax:  40 },
+    { latMin: -35, latMax:  -5, lngMin:  115, lngMax: 154 },
+    { latMin: -35, latMax:   5, lngMin:  -75, lngMax: -34 },
+    { latMin:  -5, latMax:  37, lngMin:  -18, lngMax:  52 },
+    { latMin:  -5, latMax:  55, lngMin:   60, lngMax: 120 },
+];
+
+function getRandomWorldPoint() {
+    const region = SV_REGIONS[Math.floor(Math.random() * SV_REGIONS.length)];
+    const lat = region.latMin + Math.random() * (region.latMax - region.latMin);
+    const lng = region.lngMin + Math.random() * (region.lngMax - region.lngMin);
+    return new google.maps.LatLng(lat, lng);
+}
+
+function getRandomNearbyPoint(center, maxRadiusMeters) {
+    const heading  = Math.random() * 360;
+    const distance = (0.3 + Math.random() * 0.7) * maxRadiusMeters;
+    return google.maps.geometry.spherical.computeOffset(center, distance, heading);
+}
+
+function getRouteDistanceMeters(response) {
+    return response.routes[0].legs.reduce((sum, leg) => sum + leg.distance.value, 0);
+}
+
+async function generateRandomWorldRoute() {
+    const minMeters = RANDOM_ROUTE_MIN_KM * 1000;
+    const maxMeters = RANDOM_ROUTE_MAX_KM * 1000;
+
+    const btn = document.getElementById("random-world-route");
+    if (btn) { btn.disabled = true; btn.textContent = "検索中…"; }
+
+    try {
+        for (let i = 0; i < RANDOM_ROUTE_MAX_TRIES; i++) {
+            const randomStart = getRandomWorldPoint();
+
+            const startPano = await getPanoramaAtPosition(randomStart, RANDOM_SV_RADIUS_M);
+            if (!startPano?.location?.latLng) continue;
+            const snappedStart = startPano.location.latLng;
+
+            const randomEnd = getRandomNearbyPoint(snappedStart, RANDOM_END_RADIUS_M);
+
+            const endPano = await getPanoramaAtPosition(randomEnd, RANDOM_SV_RADIUS_M);
+            if (!endPano?.location?.latLng) continue;
+            const snappedEnd = endPano.location.latLng;
+
+            let response = await requestRoute(snappedStart, snappedEnd, google.maps.TravelMode.DRIVING);
+            if (!response) {
+                response = await requestRoute(snappedStart, snappedEnd, google.maps.TravelMode.WALKING);
+            }
+            if (!response) continue;
+
+            const totalDistance = getRouteDistanceMeters(response);
+            if (totalDistance < minMeters || totalDistance > maxMeters) continue;
+
+            SvPlayer.reset();
+            startLocation = snappedStart;
+            endLocation   = snappedEnd;
+            waypoints     = [];
+            refreshWaypointMarkers();
+
+            directionsRenderer.setDirections(response);
+            route = extractRouteCoordinates(response);
+            SvPlayer.onRouteChanged();
+
+            map.setCenter(snappedStart);
+            map.setZoom(13);
+            createMarker(snappedStart);
+
+            updateRouteInfo();
+            updateButtonStates();
+
+            const km = (totalDistance / 1000).toFixed(1);
+            alert(`世界ランダムルートを設定しました！\n距離: ${km} km\n（試行 ${i + 1} 回目）`);
+            return;
+        }
+
+        alert("条件に合うルートが見つかりませんでした。\nもう一度お試しください。");
+
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = "🌍 世界ランダム"; }
+    }
+}
+
+function requestRoute(origin, destination, travelMode) {
+    return new Promise((resolve) => {
+        directionsService.route(
+            { origin, destination, travelMode },
+            (result, status) => resolve(status === google.maps.DirectionsStatus.OK ? result : null)
+        );
+    });
+}
+
+// =============================================
+//  経路検索
+// =============================================
+function calculateRoute() {
+    const request = {
+        origin: startLocation,
+        destination: endLocation,
+        waypoints,
+        optimizeWaypoints: false,
+        travelMode: google.maps.TravelMode.DRIVING,
+    };
+    directionsService.route(request, (response, status) => {
+        if (status === google.maps.DirectionsStatus.OK) {
+            applyRouteResponse(response);
+            return;
+        }
+        // 車で経路が出ない場合は徒歩でフォールバック(山道・私道など)
+        directionsService.route(
+            { ...request, travelMode: google.maps.TravelMode.WALKING },
+            (res2, st2) => {
+                if (st2 === google.maps.DirectionsStatus.OK) {
+                    applyRouteResponse(res2);
+                } else {
+                    alert("経路情報を取得できませんでした: " + status);
+                }
+            }
+        );
+    });
+}
+
+function applyRouteResponse(response) {
+    directionsRenderer.setDirections(response);
+    route = extractRouteCoordinates(response);
+    SvPlayer.onRouteChanged();
+    updateButtonStates();
+}
+
+function extractRouteCoordinates(response) {
+    const points = [];
+    response.routes[0].legs.forEach((leg) => {
+        leg.steps.forEach((step) => {
+            step.path.forEach((pt, idx) => {
+                if (idx % ROUTE_SAMPLE_RATE === 0) points.push(pt);
+            });
+        });
+    });
+    return points;
+}
+
+// =============================================
+// =============================================
+//  ★★★ 動画風ストリートビュー プレイヤー v3 ★★★
+//
+//  Street View Static API の静止画シーケンス方式。
+//  - 全コマを <img> として事前読み込み(onloadで完了を確実に検知)
+//  - 再生は読み込み済み画像の切り替えのみ → 黒画面が原理的に出ない
+//  - ドラッグでPAN(5°刻みで画像を取り直し)。向きは移動後も維持
+//  - 一時停止中は 🧭 でインタラクティブなパノラマに切替えて自由に見回し
+//
+//  ※ Google Cloud コンソールで「Street View Static API」を
+//    有効にしておく必要があります(画像1枚 = 1リクエスト課金対象)
+// =============================================
+// =============================================
+const SvPlayer = (() => {
+
+    // ---- 状態 ----
+    let frames = [];          // { position, panoId, baseHeading, cache: {key: {img, loaded}} }
+    let framesDirty = true;
+    let currentIndex = 0;
+    let playing = false;
+    let timer = null;
+    let speed = 1.5;          // 再生速度倍率(デフォルト1.5x)
+    let prepared = false;
+    let preparing = false;
+    let prepToken = 0;        // 経路変更で進行中の解析/読み込みを破棄するトークン
+
+    // ---- 視点(PAN)オフセット ----
+    let headingOffset = 0;    // 進行方向からのズレ(度)
+    let pitchOffset = 0;      // 上下方向のズレ(度)
+
+    // ---- UI要素 ----
+    let ui = {};
+    let videoWrap = null;         // 画像レイヤーの親
+    let imgLayers = [];           // [imgA, imgB] 前面/背面を入れ替えて使う
+    let frontLayer = 0;           // imgLayers の表側インデックス
+    let explorePano = null;       // 見回し用インタラクティブパノラマ(遅延生成)
+    let exploreEl = null;
+    let exploring = false;
+    let progressMarker = null;
+    let apiKey = "";
+    let preloadDone = false;      // 全コマ読み込みが完了しているか
+    let lastFailedUrl = null;     // 診断用: 直近で取得に失敗した画像URL
+
+    // =========================================
+    //  初期化
+    // =========================================
+    function init() {
+        apiKey = detectApiKey();
+        injectStyles();
+        buildVideoLayers();
+        injectPlayerBar();
+        bindPointer();
+        bindKeyboard();
+        updateUi();
+    }
+
+    function detectApiKey() {
+        const s = [...document.scripts].find((x) => (x.src || "").includes("maps.googleapis.com"));
+        if (!s) return "";
+        try { return new URL(s.src).searchParams.get("key") || ""; } catch { return ""; }
+    }
+
+    function onRouteChanged() {
+        framesDirty = true;
+        prepared = false;
+        preloadDone = false;
+        prepToken++;
+        pause(true);
+        frames = [];
+        currentIndex = 0;
+        headingOffset = 0;
+        pitchOffset = 0;
+        updateUi();
+    }
+
+    function reset() {
+        onRouteChanged();
+        if (progressMarker) { progressMarker.setMap(null); progressMarker = null; }
+        closeExplore(false);
+        setBarVisible(false);
+        hidePlaceholder(false);
+    }
+
+    // =========================================
+    //  フレーム構築(経路→パノラマ解決)
+    // =========================================
+    function buildRawFrames() {
+        frames = route.map((pt, i) => {
+            const lookIdx = Math.min(i + LOOKAHEAD_POINTS, route.length - 1);
+            const heading = (i >= route.length - 1 && route.length >= 2)
+                ? google.maps.geometry.spherical.computeHeading(route[route.length - 2], pt)
+                : google.maps.geometry.spherical.computeHeading(pt, route[lookIdx]);
+            return { position: pt, panoId: null, baseHeading: heading, cache: {} };
+        });
+    }
+
+    async function prepareFrames() {
+        if (!framesDirty && prepared) return true;
+        if (preparing) return false;
+
+        preparing = true;
+        const myToken = ++prepToken;
+        buildRawFrames();
+
+        if (frames.length === 0) { preparing = false; return false; }
+
+        if (frames.length > PANO_PREP_MAX) {
+            framesDirty = false;
+            prepared = true;
+            preparing = false;
+            return true; // パノラマ解決なし(Static APIはlocation指定で取得)
+        }
+
+        setCounterText("解析中 0%");
+        const sv = new google.maps.StreetViewService();
+
+        const resolveOne = (frame) => new Promise((resolve) => {
+            sv.getPanorama(
+                { location: frame.position, radius: 60, source: google.maps.StreetViewSource.OUTDOOR },
+                (data, status) => {
+                    if (status === google.maps.StreetViewStatus.OK && data?.location) {
+                        frame.panoId = data.location.pano || null;
+                        if (data.location.latLng) frame.position = data.location.latLng;
+                    }
+                    resolve();
+                }
+            );
+        });
+
+        let done = 0;
+        let cursor = 0;
+        const workers = Array.from({ length: PANO_PREP_CONCURRENCY }, async () => {
+            while (cursor < frames.length) {
+                if (myToken !== prepToken) return;
+                const idx = cursor++;
+                await resolveOne(frames[idx]);
+                done++;
+                if (done % 5 === 0 || done === frames.length) {
+                    setCounterText(`解析中 ${Math.round((done / frames.length) * 100)}%`);
+                }
+            }
+        });
+        await Promise.all(workers);
+
+        if (myToken !== prepToken) { preparing = false; return false; }
+
+        // 連続する同一パノラマを除去
+        const deduped = [];
+        for (const f of frames) {
+            const prev = deduped[deduped.length - 1];
+            if (prev && prev.panoId && f.panoId && prev.panoId === f.panoId) continue;
+            deduped.push(f);
+        }
+        if (deduped.length >= 2) frames = deduped;
+
+        // 間引き後にbaseHeadingを再計算
+        for (let i = 0; i < frames.length - 1; i++) {
+            const lookIdx = Math.min(i + LOOKAHEAD_POINTS, frames.length - 1);
+            frames[i].baseHeading =
+                google.maps.geometry.spherical.computeHeading(frames[i].position, frames[lookIdx].position);
+        }
+        if (frames.length >= 2) {
+            frames[frames.length - 1].baseHeading =
+                google.maps.geometry.spherical.computeHeading(
+                    frames[frames.length - 2].position, frames[frames.length - 1].position);
+        }
+
+        framesDirty = false;
+        prepared = true;
+        preparing = false;
+        return true;
+    }
+
+    // =========================================
+    //  Static API 画像の取得・キャッシュ
+    // =========================================
+    function roundedHeading(frame) {
+        const h = ((frame.baseHeading + headingOffset) % 360 + 360) % 360;
+        return Math.round(h / HEADING_STEP) * HEADING_STEP % 360;
+    }
+
+    function roundedPitch() {
+        const p = Math.max(-35, Math.min(35, pitchOffset));
+        return Math.round(p / HEADING_STEP) * HEADING_STEP;
+    }
+
+    function imageUrl(frame, h, p, forceLocation = false) {
+        const params = new URLSearchParams({
+            size: STATIC_SIZE,
+            fov: String(STATIC_FOV),
+            heading: String(h),
+            pitch: String(p),
+            key: apiKey,
+            return_error_code: "true",
+        });
+        if (frame.panoId && !forceLocation) {
+            params.set("pano", frame.panoId);
+        } else {
+            params.set("location", `${frame.position.lat()},${frame.position.lng()}`);
+            params.set("radius", "60");
+            params.set("source", "outdoor");
+        }
+        return `https://maps.googleapis.com/maps/api/streetview?${params.toString()}`;
+    }
+
+    // フレーム画像を(必要なら取得して)返す。読み込み完了で resolve。
+    // pano指定で失敗した場合(第三者投稿パノラマ等はStatic APIで取得不可のことがある)は
+    // location指定で自動的に取り直す
+    function fetchFrameImage(frame, h = roundedHeading(frame), p = roundedPitch()) {
+        const cacheKey = `h${h}_p${p}`;
+        const hit = frame.cache[cacheKey];
+        if (hit) return hit.promise;
+
+        const entry = { loaded: false };
+        entry.promise = loadImageWithRetry(imageUrl(frame, h, p))
+            .catch((failedUrl) => {
+                // pano指定で駄目ならlocation指定にフォールバック
+                if (!frame.panoId) return Promise.reject(failedUrl);
+                console.warn("[SvPlayer] pano指定で取得失敗 → location指定で再試行:", failedUrl);
+                return loadImageWithRetry(imageUrl(frame, h, p, true));
+            })
+            .then((img) => { entry.loaded = true; entry.img = img; return img; })
+            .catch((failedUrl) => {
+                entry.error = true;
+                lastFailedUrl = failedUrl;
+                console.error("[SvPlayer] 画像取得失敗:", failedUrl);
+                return null;
+            });
+        frame.cache[cacheKey] = entry;
+        return entry.promise;
+    }
+
+    // 失敗時に待ち時間を伸ばしながら再試行する(レート制限による一時的な失敗の吸収)
+    async function loadImageWithRetry(url) {
+        let lastErr = url;
+        for (let attempt = 0; attempt <= IMG_RETRY_MAX; attempt++) {
+            if (attempt > 0) {
+                await sleep(IMG_RETRY_BASE_MS * Math.pow(2, attempt - 1));
+            }
+            try {
+                return await loadImage(url);
+            } catch (e) {
+                lastErr = e;
+            }
+        }
+        throw lastErr;
+    }
+
+    function sleep(ms) {
+        return new Promise((r) => setTimeout(r, ms));
+    }
+
+    // リクエストを一定間隔に均す(短時間の集中アクセスによる拒否を防ぐ)
+    let lastRequestAt = 0;
+    async function throttle() {
+        const now = Date.now();
+        const wait = Math.max(0, lastRequestAt + IMG_REQUEST_GAP_MS - now);
+        lastRequestAt = now + wait;
+        if (wait > 0) await sleep(wait);
+    }
+
+    async function loadImage(url) {
+        await throttle();
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload  = () => resolve(img);
+            img.onerror = () => reject(url);
+            img.src = url;
+        });
+    }
+
+    function isFrameReady(frame) {
+        const e = frame.cache[`h${roundedHeading(frame)}_p${roundedPitch()}`];
+        return !!(e && e.loaded);
+    }
+
+    // 現在位置から先のコマを現在の視点向きで先読み
+    function prefetchAhead(i) {
+        for (let k = 0; k <= PREFETCH_AHEAD; k++) {
+            const f = frames[i + k];
+            if (f) fetchFrameImage(f);
+        }
+    }
+
+    // =========================================
+    //  ★ 全コマ事前読み込み(本命機能)
+    // =========================================
+    async function preloadAll() {
+        const myToken = prepToken;
+        const total = frames.length;
+        let done = 0;
+        let errors = 0;
+
+        const jobs = frames.slice();
+        const workers = Array.from({ length: IMG_CONCURRENCY }, async () => {
+            while (jobs.length > 0) {
+                if (myToken !== prepToken) return;
+                const frame = jobs.shift();
+                const img = await fetchFrameImage(frame);
+                if (!img) errors++;
+                done++;
+                if (done % 3 === 0 || done === total) {
+                    setCounterText(`読込 ${Math.round((done / total) * 100)}%`);
+                }
+            }
+        });
+        await Promise.all(workers);
+
+        if (myToken !== prepToken) return false;
+
+        // 全コマを読み込み終えてから判定する。
+        // 一部のコマが取得できないのは通常のこと(第三者投稿パノラマ、SV空白地帯など)なので、
+        // 大半が失敗した場合のみAPI設定の問題として診断パネルを表示する
+        const failRate = total > 0 ? errors / total : 0;
+        if (failRate >= FAIL_RATE_THRESHOLD) {
+            showDiagnostic();
+            return false;
+        }
+        if (errors > 0) {
+            console.warn(`[SvPlayer] ${total}コマ中${errors}コマが取得できませんでした(スキップして再生します)`);
+        }
+        preloadDone = true;
+        return true;
+    }
+
+    // =========================================
+    //  診断オーバーレイ: 失敗した画像URLを表示。
+    //  リンクを新しいタブで開くとGoogleのエラー文がそのまま見える
+    // =========================================
+    function showDiagnostic() {
+        const old = document.getElementById("sv-diagnostic");
+        if (old) old.remove();
+
+        const panel = document.createElement("div");
+        panel.id = "sv-diagnostic";
+        panel.innerHTML = `
+            <h3>⚠ ストリートビュー画像を取得できませんでした</h3>
+            <p>下のリンクを<strong>新しいタブで開く</strong>と、Googleからの
+               エラーメッセージ(拒否の理由)がそのまま表示されます。</p>
+            ${lastFailedUrl ? `<a href="${lastFailedUrl}" target="_blank" rel="noopener">失敗したリクエストを開いて原因を確認する ↗</a>` : ""}
+            <p class="sv-diag-note">主な原因: Street View Static API未有効 /
+               APIキーの「APIの制限」に未追加 / リファラー制限 / 請求先未設定
+               (設定変更後は反映まで最大5分かかります)</p>
+            <button id="sv-diag-close">閉じる</button>
+        `;
+        videoWrap.appendChild(panel);
+        panel.querySelector("#sv-diag-close").addEventListener("click", () => panel.remove());
+        ["click", "pointerdown", "pointerup", "pointermove"].forEach((ev) =>
+            panel.addEventListener(ev, (e) => e.stopPropagation())
+        );
+        updateUi();
+    }
+
+    // =========================================
+    //  再生制御
+    // =========================================
+    async function start() {
+        setBarVisible(true);
+        const ok = await prepareFrames();
+        if (!ok || frames.length === 0) { updateUi(); return; }
+
+        if (frames.length > PRELOAD_CONFIRM_OVER) {
+            if (!confirm(
+                `${frames.length}コマの画像を事前読み込みします。` +
+                `(Static APIリクエストが${frames.length}回発生します)\n実行しますか?`
+            )) return;
+        }
+
+        const myToken = prepToken;
+        currentIndex = 0;
+        headingOffset = 0;
+        pitchOffset = 0;
+
+        // ★ 全コマを読み込み切ってから再生開始
+        const loaded = await preloadAll();
+        if (myToken !== prepToken) return;
+        if (!loaded) { updateUi(); return; }
+
+        showFrame(0);
+        play();
+    }
+
+    function play() {
+        if (playing) return;
+        if (frames.length === 0) {
+            if (route.length > 0) { start(); }
+            return;
+        }
+        closeExplore();
+        if (currentIndex >= frames.length - 1) currentIndex = 0;
+        playing = true;
+        scheduleTick();
+        flashIcon("▶");
+        updateUi();
+    }
+
+    function pause(silent = false) {
+        if (timer) { clearTimeout(timer); timer = null; }
+        if (playing && !silent) flashIcon("⏸");
+        playing = false;
+        updateUi();
+    }
+
+    function toggle() { playing ? pause() : play(); }
+
+    function scheduleTick() {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(tick, BASE_INTERVAL_MS / speed);
+    }
+
+    function tick() {
+        if (!playing) return;
+        if (currentIndex >= frames.length - 1) {
+            pause(true);
+            flashIcon("🏁");
+            return;
+        }
+        currentIndex++;
+        showFrame(currentIndex);
+        scheduleTick();
+    }
+
+    function seekTo(index) {
+        if (frames.length === 0) return;
+        currentIndex = Math.max(0, Math.min(index, frames.length - 1));
+        closeExplore();
+        showFrame(currentIndex);
+        if (playing) scheduleTick();
+    }
+
+    function setSpeed(mult) {
+        speed = mult;
+        if (playing) scheduleTick();
+        updateUi();
+    }
+
+    // =========================================
+    //  フレーム表示(画像レイヤー入れ替え)
+    // =========================================
+    async function showFrame(index) {
+        const frame = frames[index];
+        if (!frame) return;
+
+        map.setCenter(frame.position);
+        updateProgressMarker(frame.position);
+        updateUi();
+
+        const img = await fetchFrameImage(frame);
+        // 読み込み待ちの間に別コマへ進んでいたら破棄(前の画像が残る=黒画面は出ない)
+        if (index !== currentIndex || !img) return;
+        swapLayerTo(img.src);
+    }
+
+    function swapLayerTo(src) {
+        hidePlaceholder(true);
+        const back = imgLayers[1 - frontLayer];
+        back.src = src;
+        back.classList.remove("back");
+        back.classList.add("front");
+        const old = imgLayers[frontLayer];
+        old.classList.remove("front");
+        old.classList.add("back");
+        frontLayer = 1 - frontLayer;
+    }
+
+    // 視点(PAN)変更後の表示更新: 現在コマを新しい向きで取り直し、先読みも更新
+    let povRefreshTimer = null;
+    function refreshPov() {
+        if (povRefreshTimer) return;
+        povRefreshTimer = setTimeout(async () => {
+            povRefreshTimer = null;
+            const frame = frames[currentIndex];
+            if (!frame) return;
+            const img = await fetchFrameImage(frame);
+            if (img && frame === frames[currentIndex]) swapLayerTo(img.src);
+            prefetchAhead(currentIndex + 1);
+            updateRecenterButton();
+        }, POV_REFRESH_MS);
+    }
+
+    function recenter() {
+        headingOffset = 0;
+        pitchOffset = 0;
+        refreshPov();
+        updateRecenterButton();
+    }
+
+    // =========================================
+    //  ドラッグPAN & タップ再生/停止
+    // =========================================
+    function bindPointer() {
+        let downX = 0, downY = 0, downT = 0;
+        let dragging = false;
+        let lastX = 0, lastY = 0;
+
+        videoWrap.addEventListener("pointerdown", (e) => {
+            if (exploring) return;
+            downX = lastX = e.clientX;
+            downY = lastY = e.clientY;
+            downT = Date.now();
+            dragging = true;
+            videoWrap.setPointerCapture(e.pointerId);
+        });
+
+        videoWrap.addEventListener("pointermove", (e) => {
+            if (!dragging || exploring || frames.length === 0) return;
+            const rect = videoWrap.getBoundingClientRect();
+            const degPerPxH = STATIC_FOV / rect.width;
+            const degPerPxV = (STATIC_FOV * 0.66) / rect.height;
+            headingOffset -= (e.clientX - lastX) * degPerPxH;
+            pitchOffset   += (e.clientY - lastY) * degPerPxV;
+            pitchOffset = Math.max(-35, Math.min(35, pitchOffset));
+            lastX = e.clientX;
+            lastY = e.clientY;
+            refreshPov();
+        });
+
+        videoWrap.addEventListener("pointerup", (e) => {
+            dragging = false;
+            if (exploring || frames.length === 0) return;
+            const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
+            const elapsed = Date.now() - downT;
+            if (moved < 6 && elapsed < 400) {
+                if (e.target.closest("#sv-player-bar")) return;
+                if (e.target.closest("button, a, [role='button']")) return;
+                toggle();
+            } else {
+                prefetchAhead(currentIndex + 1); // ドラッグ終了 → 新しい向きで先読み
+            }
+        });
+
+        videoWrap.addEventListener("pointercancel", () => { dragging = false; });
+    }
+
+    // =========================================
+    //  🧭 見回しモード(インタラクティブSVに一時切替)
+    // =========================================
+    function openExplore() {
+        const frame = frames[currentIndex];
+        if (!frame) return;
+        pause(true);
+
+        if (!exploreEl) {
+            exploreEl = document.createElement("div");
+            exploreEl.id = "sv-explore";
+            const closeBtn = document.createElement("button");
+            closeBtn.id = "sv-explore-close";
+            closeBtn.textContent = "✕ 動画に戻る";
+            closeBtn.addEventListener("click", () => closeExplore());
+            const inner = document.createElement("div");
+            inner.id = "sv-explore-pano";
+            exploreEl.append(inner, closeBtn);
+            videoWrap.appendChild(exploreEl);
+            explorePano = new google.maps.StreetViewPanorama(inner, {
+                pov: { heading: 0, pitch: 0 },
+                zoom: 1,
+                addressControl: false,
+                motionTracking: false,
+                motionTrackingControl: false,
+                fullscreenControl: false,
+            });
+        }
+
+        if (frame.panoId) explorePano.setPano(frame.panoId);
+        else explorePano.setPosition(frame.position);
+        explorePano.setPov({
+            heading: ((frame.baseHeading + headingOffset) % 360 + 360) % 360,
+            pitch: Math.max(-35, Math.min(35, pitchOffset)),
+        });
+
+        exploreEl.style.display = "block";
+        exploring = true;
+        google.maps.event.trigger(explorePano, "resize");
+        updateUi();
+    }
+
+    // 見回しで変えた向きを動画側に引き継いで閉じる
+    function closeExplore(applyPov = true) {
+        if (!exploring) return;
+        exploring = false;
+        if (applyPov && explorePano && frames[currentIndex]) {
+            const pov = explorePano.getPov();
+            if (pov) {
+                headingOffset = normalizeDeg(pov.heading - frames[currentIndex].baseHeading);
+                pitchOffset = Math.max(-35, Math.min(35, pov.pitch ?? 0));
+                refreshPov();
+            }
+        }
+        if (exploreEl) exploreEl.style.display = "none";
+        updateUi();
+    }
+
+    function normalizeDeg(deg) {
+        let d = deg % 360;
+        if (d > 180)  d -= 360;
+        if (d < -180) d += 360;
+        return d;
+    }
+
+    // =========================================
+    //  地図上の現在位置マーカー
+    // =========================================
+    function updateProgressMarker(position) {
+        if (!progressMarker) {
+            progressMarker = new google.maps.Marker({
+                position, map,
+                zIndex: 999,
+                icon: {
+                    path: google.maps.SymbolPath.CIRCLE,
+                    scale: 7,
+                    fillColor: "#00d4ff",
+                    fillOpacity: 1,
+                    strokeColor: "#ffffff",
+                    strokeWeight: 2,
+                },
+            });
+        } else {
+            progressMarker.setPosition(position);
+        }
+    }
+
+    // =========================================
+    //  UI構築
+    // =========================================
+    function buildVideoLayers() {
+        videoWrap = document.getElementById("street-view");
+        if (!videoWrap) return;
+        for (let k = 0; k < 2; k++) {
+            const img = document.createElement("img");
+            img.className = "sv-pane " + (k === 0 ? "front" : "back");
+            img.alt = "";
+            img.draggable = false;
+            videoWrap.appendChild(img);
+            imgLayers.push(img);
+        }
+        frontLayer = 0;
+
+        // 開始前の案内プレースホルダー
+        const ph = document.createElement("div");
+        ph.id = "sv-placeholder";
+        ph.innerHTML = `
+            <div class="sv-ph-icon">🎬</div>
+            <div class="sv-ph-text">経路を設定して<br>「▶ ストリートビュー開始」を押すと<br>ここに動画が表示されます</div>
+        `;
+        videoWrap.appendChild(ph);
+    }
+
+    function hidePlaceholder(hidden) {
+        const ph = document.getElementById("sv-placeholder");
+        if (ph) ph.style.display = hidden ? "none" : "flex";
+    }
+
+    function injectStyles() {
+        const css = `
+        /* おすすめコース選択 */
+        #preset-row { align-items: center; gap: 10px; flex-wrap: wrap; }
+        #preset-course {
+            background: rgba(26,34,54,0.9);
+            color: #e0eaf8;
+            border: 1px solid rgba(0,212,255,0.35);
+            border-radius: 8px;
+            font-size: 0.8rem;
+            padding: 7px 10px;
+            cursor: pointer;
+            min-width: 260px;
+            max-width: 100%;
+            font-family: 'Noto Sans JP', sans-serif;
+        }
+        #preset-course:focus { outline: none; border-color: #00d4ff; }
+        #preset-course optgroup { color: #7a90b0; background: #111827; }
+        #preset-course option { color: #e0eaf8; background: #111827; }
+        #street-view { background: #0a0e1a; touch-action: none; user-select: none; }
+        /* 画像レイヤー(表:front / 裏:back) */
+        img.sv-pane {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            opacity: 1;
+        }
+        .sv-pane.front { z-index: 3; animation: svFadeIn 0.22s ease; }
+        .sv-pane.back  { z-index: 1; }
+        @keyframes svFadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .sv-tap-hint { z-index: 21; }
+        /* 見回しモード */
+        #sv-explore {
+            position: absolute;
+            inset: 0;
+            z-index: 24;
+            display: none;
+        }
+        #sv-explore-pano { position: absolute; inset: 0; }
+        #sv-explore-close {
+            position: absolute;
+            top: 10px; left: 10px;
+            z-index: 26;
+            background: rgba(10,14,26,0.85);
+            color: #00d4ff;
+            border: 1px solid rgba(0,212,255,0.4);
+            border-radius: 8px;
+            padding: 7px 14px;
+            font-size: 0.8rem;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        #sv-player-bar {
+            position: absolute;
+            left: 10px; right: 10px; bottom: 10px;
+            z-index: 25;
+            display: none;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: rgba(10,14,26,0.82);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(0,212,255,0.25);
+            border-radius: 12px;
+            font-family: 'Noto Sans JP', sans-serif;
+        }
+        #sv-player-bar.visible { display: flex; }
+        #sv-player-bar button {
+            background: transparent;
+            border: 1px solid rgba(0,212,255,0.3);
+            color: #00d4ff;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            padding: 4px 9px;
+            cursor: pointer;
+            line-height: 1;
+            transition: all 0.15s;
+            flex-shrink: 0;
+        }
+        #sv-player-bar button:hover { background: rgba(0,212,255,0.12); }
+        #sv-player-bar button:disabled { opacity: 0.35; cursor: not-allowed; }
+        #sv-player-bar button.active { background: rgba(0,212,255,0.25); box-shadow: 0 0 8px rgba(0,212,255,0.4); }
+        #sv-seek {
+            flex: 1;
+            min-width: 60px;
+            accent-color: #00d4ff;
+            cursor: pointer;
+            height: 4px;
+        }
+        #sv-counter {
+            font-size: 0.68rem;
+            color: #7a90b0;
+            white-space: nowrap;
+            min-width: 64px;
+            text-align: center;
+            flex-shrink: 0;
+            font-variant-numeric: tabular-nums;
+        }
+        #sv-speed {
+            background: rgba(26,34,54,0.9);
+            color: #e0eaf8;
+            border: 1px solid rgba(0,212,255,0.3);
+            border-radius: 8px;
+            font-size: 0.72rem;
+            padding: 4px 4px;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+        #sv-flash {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 15;
+            font-size: 3.2rem;
+            pointer-events: none;
+            opacity: 0;
+            filter: drop-shadow(0 0 16px rgba(0,212,255,0.8));
+        }
+        #sv-flash.flash { animation: svFlash 0.7s ease-out forwards; }
+        @keyframes svFlash {
+            0%   { opacity: 0.95; transform: translate(-50%, -50%) scale(0.8); }
+            100% { opacity: 0;    transform: translate(-50%, -50%) scale(1.5); }
+        }
+        /* 開始前プレースホルダー */
+        #sv-placeholder {
+            position: absolute;
+            inset: 0;
+            z-index: 5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            pointer-events: none;
+            text-align: center;
+        }
+        #sv-placeholder .sv-ph-icon {
+            font-size: 2.6rem;
+            filter: drop-shadow(0 0 14px rgba(0,212,255,0.6));
+        }
+        #sv-placeholder .sv-ph-text {
+            color: #7a90b0;
+            font-size: 0.82rem;
+            line-height: 1.9;
+        }
+        /* 診断パネル */
+        #sv-diagnostic {
+            position: absolute;
+            inset: 12px;
+            z-index: 30;
+            background: rgba(10,14,26,0.95);
+            border: 1px solid rgba(255,106,0,0.5);
+            border-radius: 12px;
+            padding: 18px;
+            color: #e0eaf8;
+            font-size: 0.82rem;
+            line-height: 1.7;
+            overflow: auto;
+            font-family: 'Noto Sans JP', sans-serif;
+        }
+        #sv-diagnostic h3 { color: #ff6a00; font-size: 0.9rem; margin-bottom: 8px; }
+        #sv-diagnostic a {
+            display: inline-block;
+            margin: 8px 0;
+            color: #00d4ff;
+            word-break: break-all;
+            font-weight: 700;
+        }
+        #sv-diagnostic .sv-diag-note { color: #7a90b0; font-size: 0.72rem; }
+        #sv-diag-close {
+            margin-top: 10px;
+            background: transparent;
+            border: 1px solid rgba(0,212,255,0.4);
+            color: #00d4ff;
+            border-radius: 8px;
+            padding: 6px 16px;
+            cursor: pointer;
+        }
+        /* 旧オーバーレイは無効化 */
+        #sv-tap-overlay { pointer-events: none !important; display: none !important; }
+        @media (max-width: 520px) {
+            #sv-player-bar { flex-wrap: wrap; gap: 6px; padding: 7px 9px; }
+            #sv-seek { flex-basis: 100%; order: -1; }
+        }`;
+        const style = document.createElement("style");
+        style.textContent = css;
+        document.head.appendChild(style);
+    }
+
+    function injectPlayerBar() {
+        const svWrap = document.getElementById("street-view");
+        if (!svWrap) return;
+
+        const bar = document.createElement("div");
+        bar.id = "sv-player-bar";
+        bar.innerHTML = `
+            <button id="sv-prev"  title="1つ戻る">⏮</button>
+            <button id="sv-play"  title="再生 / 一時停止">▶</button>
+            <button id="sv-next"  title="1つ進む">⏭</button>
+            <input  id="sv-seek" type="range" min="0" max="0" value="0" step="1">
+            <span   id="sv-counter">- / -</span>
+            <select id="sv-speed" title="再生速度">
+                <option value="0.5">0.5x</option>
+                <option value="1">1x</option>
+                <option value="1.5" selected>1.5x</option>
+                <option value="2">2x</option>
+                <option value="3">3x</option>
+            </select>
+            <button id="sv-recenter" title="進行方向に視点を戻す">⌖</button>
+            <button id="sv-explore-btn" title="この地点を自由に見回す">🧭</button>
+        `;
+        svWrap.appendChild(bar);
+
+        const flash = document.createElement("div");
+        flash.id = "sv-flash";
+        svWrap.appendChild(flash);
+
+        ui = {
+            bar,
+            flash,
+            play:     bar.querySelector("#sv-play"),
+            prev:     bar.querySelector("#sv-prev"),
+            next:     bar.querySelector("#sv-next"),
+            seek:     bar.querySelector("#sv-seek"),
+            counter:  bar.querySelector("#sv-counter"),
+            speedSel: bar.querySelector("#sv-speed"),
+            recenter: bar.querySelector("#sv-recenter"),
+            explore:  bar.querySelector("#sv-explore-btn"),
+        };
+
+        ["click", "pointerdown", "pointerup", "pointermove", "touchstart"].forEach((ev) =>
+            bar.addEventListener(ev, (e) => e.stopPropagation())
+        );
+
+        ui.play.addEventListener("click", toggle);
+        ui.prev.addEventListener("click", () => seekTo(currentIndex - 1));
+        ui.next.addEventListener("click", () => seekTo(currentIndex + 1));
+        ui.seek.addEventListener("input", () => seekTo(parseInt(ui.seek.value, 10)));
+        ui.speedSel.addEventListener("change", () => setSpeed(parseFloat(ui.speedSel.value)));
+        ui.recenter.addEventListener("click", recenter);
+        ui.explore.addEventListener("click", () => (exploring ? closeExplore() : openExplore()));
+    }
+
+    function setBarVisible(visible) {
+        if (ui.bar) ui.bar.classList.toggle("visible", visible);
+    }
+
+    function updateUi() {
+        if (!ui.bar) return;
+        const total = frames.length;
+        ui.play.textContent = playing ? "⏸" : "▶";
+        ui.seek.max = Math.max(0, total - 1);
+        ui.seek.value = currentIndex;
+        ui.seek.disabled = total === 0;
+        ui.counter.textContent = total > 0 ? `${currentIndex + 1} / ${total}` : "- / -";
+        ui.prev.disabled = total === 0 || currentIndex <= 0;
+        ui.next.disabled = total === 0 || currentIndex >= total - 1;
+        ui.explore.disabled = total === 0;
+        ui.explore.classList.toggle("active", exploring);
+    }
+
+    function updateRecenterButton() {
+        if (!ui.recenter) return;
+        ui.recenter.classList.toggle(
+            "active",
+            Math.abs(headingOffset) > 5 || Math.abs(pitchOffset) > 5
+        );
+    }
+
+    function setCounterText(text) {
+        if (ui.counter) ui.counter.textContent = text;
+    }
+
+    function flashIcon(icon) {
+        if (!ui.flash) return;
+        ui.flash.textContent = icon;
+        ui.flash.classList.remove("flash");
+        void ui.flash.offsetWidth;
+        ui.flash.classList.add("flash");
+    }
+
+    // =========================================
+    //  キーボード操作(スペース / Shift+←→)
+    // =========================================
+    function bindKeyboard() {
+        document.addEventListener("keydown", (e) => {
+            const tag = (e.target.tagName || "").toLowerCase();
+            if (tag === "input" || tag === "textarea" || tag === "select") return;
+            if (frames.length === 0) return;
+
+            if (e.code === "Space") {
+                e.preventDefault();
+                toggle();
+            } else if (e.code === "ArrowRight" && e.shiftKey) {
+                e.preventDefault();
+                seekTo(currentIndex + 1);
+            } else if (e.code === "ArrowLeft" && e.shiftKey) {
+                e.preventDefault();
+                seekTo(currentIndex - 1);
+            } else if (e.code === "Escape" && exploring) {
+                closeExplore();
+            }
+        });
+    }
+
+    // ---- 公開API ----
+    return { init, start, play, pause, toggle, seekTo, setSpeed, reset, onRouteChanged };
+})();
+
+// =============================================
+//  エントリーポイント
+// =============================================
+window.onload = initMap;
