@@ -20,14 +20,17 @@ const BASE_INTERVAL_MS  = 2000;   // 等速(1x)時のフレーム間隔
 const ROUTE_SAMPLE_RATE = 2;      // 経路ポイントの間引き率(小さいほど高密度=滑らか)
 
 const PANO_PREP_MAX         = 800; // これ以下のポイント数ならパノラマ解決+重複除去を行う
-const PANO_PREP_CONCURRENCY = 6;   // パノラマ解決の同時リクエスト数
+const PANO_PREP_CONCURRENCY = 3;   // パノラマ解決の同時リクエスト数(多いとレート制限に触れる)
 
 // --- Static API 静止画シーケンス設定 ---
 const STATIC_SIZE         = "640x400"; // 取得画像サイズ(Static APIの上限は640x640)
 const STATIC_FOV          = 90;        // 視野角(小さいほどズーム)
 const HEADING_STEP        = 5;         // PAN操作の角度刻み(画像キャッシュ単位)
 const PREFETCH_AHEAD      = 8;         // 視点変更後に先読みするコマ数
-const IMG_CONCURRENCY     = 6;         // 画像の同時読み込み数
+const IMG_CONCURRENCY     = 2;         // 画像の同時読み込み数(多いとGoogleにレート制限で弾かれる)
+const IMG_REQUEST_GAP_MS  = 60;        // 各画像リクエストの最小間隔(レート制限回避)
+const IMG_RETRY_MAX       = 3;         // 失敗した画像の再試行回数
+const IMG_RETRY_BASE_MS   = 700;       // 再試行の待ち時間(指数バックオフの基準)
 const FAIL_RATE_THRESHOLD = 0.9;       // この割合以上のコマが失敗したらAPI設定の問題として診断表示
 const POV_REFRESH_MS      = 140;       // ドラッグ中の画像更新間隔
 const PRELOAD_CONFIRM_OVER = 300;      // このコマ数を超える全読込は確認ダイアログを出す
@@ -840,11 +843,12 @@ const SvPlayer = (() => {
         if (hit) return hit.promise;
 
         const entry = { loaded: false };
-        entry.promise = loadImage(imageUrl(frame, h, p))
+        entry.promise = loadImageWithRetry(imageUrl(frame, h, p))
             .catch((failedUrl) => {
+                // pano指定で駄目ならlocation指定にフォールバック
                 if (!frame.panoId) return Promise.reject(failedUrl);
                 console.warn("[SvPlayer] pano指定で取得失敗 → location指定で再試行:", failedUrl);
-                return loadImage(imageUrl(frame, h, p, true)); // フォールバック
+                return loadImageWithRetry(imageUrl(frame, h, p, true));
             })
             .then((img) => { entry.loaded = true; entry.img = img; return img; })
             .catch((failedUrl) => {
@@ -857,7 +861,37 @@ const SvPlayer = (() => {
         return entry.promise;
     }
 
-    function loadImage(url) {
+    // 失敗時に待ち時間を伸ばしながら再試行する(レート制限による一時的な失敗の吸収)
+    async function loadImageWithRetry(url) {
+        let lastErr = url;
+        for (let attempt = 0; attempt <= IMG_RETRY_MAX; attempt++) {
+            if (attempt > 0) {
+                await sleep(IMG_RETRY_BASE_MS * Math.pow(2, attempt - 1));
+            }
+            try {
+                return await loadImage(url);
+            } catch (e) {
+                lastErr = e;
+            }
+        }
+        throw lastErr;
+    }
+
+    function sleep(ms) {
+        return new Promise((r) => setTimeout(r, ms));
+    }
+
+    // リクエストを一定間隔に均す(短時間の集中アクセスによる拒否を防ぐ)
+    let lastRequestAt = 0;
+    async function throttle() {
+        const now = Date.now();
+        const wait = Math.max(0, lastRequestAt + IMG_REQUEST_GAP_MS - now);
+        lastRequestAt = now + wait;
+        if (wait > 0) await sleep(wait);
+    }
+
+    async function loadImage(url) {
+        await throttle();
         return new Promise((resolve, reject) => {
             const img = new Image();
             img.onload  = () => resolve(img);
