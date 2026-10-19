@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="strict-origin-when-cross-origin">
 <title>searchroute 診断ページ</title>
 <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyB_Tmq8Qn3F269Jx1ehDA7xcpWFHTxRoBQ&libraries=places,geometry"></script>
 <style>
@@ -32,6 +33,9 @@ window.addEventListener("error", (e) => {
 });
 
 const resultsEl = document.getElementById("results");
+
+// ★ app.js の SV_PROXY_URL と同じ値にする
+const SV_PROXY_URL = "https://searchroute-sv.YOUR-SUBDOMAIN.workers.dev/sv";
 
 function addItem(title) {
     const div = document.createElement("div");
@@ -66,11 +70,13 @@ window.onload = async () => {
     if (window.google?.maps?.StreetViewService) t1.ok("google.maps は利用可能です。");
     else { t1.ng("google.maps が読み込めていません。APIキーまたはネットワークの問題です。"); return; }
 
-    // 2) APIキー検出(app.jsと同じ方法)
-    const t2 = addItem("APIキーの検出(app.jsと同じ処理)");
-    const key = detectApiKey();
-    if (key) t2.ok(`検出されたキー: ${key.slice(0, 12)}…(末尾略)`);
-    else { t2.ng("scriptタグからAPIキーを検出できませんでした。"); return; }
+    // 2) Worker URL の設定確認
+    const t2 = addItem("Worker URL(SV_PROXY_URL)の設定");
+    if (SV_PROXY_URL.includes("YOUR-SUBDOMAIN")) {
+        t2.ng("test.html と app.js の SV_PROXY_URL を Worker の URL に書き換えてください。"); return;
+    }
+    t2.ok(SV_PROXY_URL);
+    const key = detectApiKey(); // 地図用(ブラウザ用)キー。6) の確認でのみ使う
 
     // 3) パノラマ検索(JS API)
     const t3 = addItem("パノラマ検索(StreetViewService)");
@@ -85,23 +91,31 @@ window.onload = async () => {
     if (panoData?.location?.pano) t3.ok(`パノラマID取得成功: ${panoData.location.pano}`);
     else { t3.ng("パノラマ検索に失敗しました(StreetViewService)。"); }
 
-    // 4) Static API - location指定
-    const t4 = addItem("Static API 画像取得(location指定)");
-    const url4 = `https://maps.googleapis.com/maps/api/streetview?size=640x400&fov=90&location=35.681236,139.767125&key=${key}&return_error_code=true`;
+    // 4) Static API - location指定(Worker経由・署名付き)
+    const t4 = addItem("Worker経由の画像取得(location指定)");
+    const url4 = `${SV_PROXY_URL}?size=640x400&fov=90&location=35.6812360,139.7671250`;
     const r4 = await loadImg(url4);
     if (r4.ok) { t4.ok(`成功。<br><a href="${url4}" target="_blank">${url4}</a>`); r4.img.className = "testimg"; t4.el.appendChild(r4.img); }
-    else t4.ng(`失敗。下のリンクを新しいタブで開くとGoogleのエラー文が見られます:<br><a href="${url4}" target="_blank">${url4}</a>`);
+    else t4.ng(`失敗。下のリンクを新しいタブで開くとWorkerまたはGoogleのエラー文が見られます:<br><a href="${url4}" target="_blank">${url4}</a>`);
 
-    // 5) Static API - pano指定
-    const t5 = addItem("Static API 画像取得(パノラマID指定)");
+    // 5) Static API - pano指定(Worker経由・署名付き)
+    const t5 = addItem("Worker経由の画像取得(パノラマID指定)");
     if (panoData?.location?.pano) {
-        const url5 = `https://maps.googleapis.com/maps/api/streetview?size=640x400&fov=90&pano=${panoData.location.pano}&key=${key}&return_error_code=true`;
+        const url5 = `${SV_PROXY_URL}?size=640x400&fov=90&pano=${encodeURIComponent(panoData.location.pano)}`;
         const r5 = await loadImg(url5);
         if (r5.ok) { t5.ok(`成功。<br><a href="${url5}" target="_blank">${url5}</a>`); r5.img.className = "testimg"; t5.el.appendChild(r5.img); }
-        else t5.ng(`失敗。下のリンクを新しいタブで開くとGoogleのエラー文が見られます:<br><a href="${url5}" target="_blank">${url5}</a>`);
+        else t5.ng(`失敗。下のリンクを新しいタブで開くとWorkerまたはGoogleのエラー文が見られます:<br><a href="${url5}" target="_blank">${url5}</a>`);
     } else {
         t5.ng("パノラマIDが取得できなかったためスキップ。");
     }
+
+    // 6) 防御の確認: ブラウザ用キーで Google を直接(署名なしで)呼んでも拒否されること
+    //    ※ 拒否されれば ✅。表示されてしまった場合は ❌(キーの制限 or 署名なしクォータ0 が未設定)
+    const t6 = addItem("防御確認: ブラウザ用キーでの直接呼び出しが拒否されるか");
+    const url6 = `https://maps.googleapis.com/maps/api/streetview?size=64x64&location=35.6812360,139.7671250&key=${key}&return_error_code=true`;
+    const r6 = await loadImg(url6);
+    if (!r6.ok) t6.ok("拒否されました(正常)。ブラウザ用キーが漏れても Street View Static API には使えません。");
+    else t6.ng("直接呼び出しで画像が取れてしまいました。①地図用キーの「APIの制限」から Street View Static API を外す、②署名なしリクエストの1日の割り当てを0にする、を確認してください。");
 
     const done = document.createElement("div");
     done.className = "item ok";

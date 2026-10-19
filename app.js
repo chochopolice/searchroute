@@ -1,6 +1,7 @@
 // =============================================
 //  Google Maps ストリートビュー 散歩アプリ
-//  v3: 動画風プレイヤー(Static API静止画シーケンス方式)
+//  v4.0: 動画風プレイヤー(Static API静止画シーケンス方式)
+//        画像は Cloudflare Worker 経由で署名付き取得(APIキーをブラウザに出さない)
 // =============================================
 
 // --- グローバル変数 ---
@@ -21,6 +22,11 @@ const ROUTE_SAMPLE_RATE = 2;      // 経路ポイントの間引き率(小さい
 
 const PANO_PREP_MAX         = 800; // これ以下のポイント数ならパノラマ解決+重複除去を行う
 const PANO_PREP_CONCURRENCY = 3;   // パノラマ解決の同時リクエスト数(多いとレート制限に触れる)
+
+// --- 画像の中継先(Cloudflare Worker) ---
+// ★ Worker を作成したら、その URL(末尾は /sv)に書き換える
+// Street View Static API のキーと署名は Worker 側にだけ置き、ブラウザから Google を直接呼ばない
+const SV_PROXY_URL = "https://searchroute-sv.YOUR-SUBDOMAIN.workers.dev/sv";
 
 // --- Static API 静止画シーケンス設定 ---
 const STATIC_SIZE         = "640x400"; // 取得画像サイズ(Static APIの上限は640x640)
@@ -668,7 +674,6 @@ const SvPlayer = (() => {
     let exploreEl = null;
     let exploring = false;
     let progressMarker = null;
-    let apiKey = "";
     let preloadDone = false;      // 全コマ読み込みが完了しているか
     let lastFailedUrl = null;     // 診断用: 直近で取得に失敗した画像URL
 
@@ -676,19 +681,15 @@ const SvPlayer = (() => {
     //  初期化
     // =========================================
     function init() {
-        apiKey = detectApiKey();
+        if (SV_PROXY_URL.includes("YOUR-SUBDOMAIN")) {
+            console.error("[SvPlayer] app.js の SV_PROXY_URL を Worker の URL に書き換えてください");
+        }
         injectStyles();
         buildVideoLayers();
         injectPlayerBar();
         bindPointer();
         bindKeyboard();
         updateUi();
-    }
-
-    function detectApiKey() {
-        const s = [...document.scripts].find((x) => (x.src || "").includes("maps.googleapis.com"));
-        if (!s) return "";
-        try { return new URL(s.src).searchParams.get("key") || ""; } catch { return ""; }
     }
 
     function onRouteChanged() {
@@ -815,23 +816,22 @@ const SvPlayer = (() => {
         return Math.round(p / HEADING_STEP) * HEADING_STEP;
     }
 
+    // 画像URLは Worker 宛て。キー・署名・return_error_code は Worker 側で付与する
     function imageUrl(frame, h, p, forceLocation = false) {
         const params = new URLSearchParams({
             size: STATIC_SIZE,
             fov: String(STATIC_FOV),
             heading: String(h),
             pitch: String(p),
-            key: apiKey,
-            return_error_code: "true",
         });
         if (frame.panoId && !forceLocation) {
             params.set("pano", frame.panoId);
         } else {
-            params.set("location", `${frame.position.lat()},${frame.position.lng()}`);
+            params.set("location", `${frame.position.lat().toFixed(7)},${frame.position.lng().toFixed(7)}`);
             params.set("radius", "60");
             params.set("source", "outdoor");
         }
-        return `https://maps.googleapis.com/maps/api/streetview?${params.toString()}`;
+        return `${SV_PROXY_URL}?${params.toString()}`;
     }
 
     // フレーム画像を(必要なら取得して)返す。読み込み完了で resolve。
@@ -969,9 +969,10 @@ const SvPlayer = (() => {
             <p>下のリンクを<strong>新しいタブで開く</strong>と、Googleからの
                エラーメッセージ(拒否の理由)がそのまま表示されます。</p>
             ${lastFailedUrl ? `<a href="${lastFailedUrl}" target="_blank" rel="noopener">失敗したリクエストを開いて原因を確認する ↗</a>` : ""}
-            <p class="sv-diag-note">主な原因: Street View Static API未有効 /
-               APIキーの「APIの制限」に未追加 / リファラー制限 / 請求先未設定
-               (設定変更後は反映まで最大5分かかります)</p>
+            <p class="sv-diag-note">主な原因: 1日の上限(クォータ)に到達 /
+               app.js の SV_PROXY_URL 未設定 / Worker の設定(SV_KEY・SV_SIGNING_SECRET・ALLOWED_ORIGINS) /
+               Street View Static API未有効 / 請求先未設定
+               (Google側の設定変更は反映まで最大5分かかります)</p>
             <button id="sv-diag-close">閉じる</button>
         `;
         videoWrap.appendChild(panel);
@@ -993,7 +994,7 @@ const SvPlayer = (() => {
         if (frames.length > PRELOAD_CONFIRM_OVER) {
             if (!confirm(
                 `${frames.length}コマの画像を事前読み込みします。` +
-                `(Static APIリクエストが${frames.length}回発生します)\n実行しますか?`
+                `(Static APIリクエストが${frames.length}回発生し、1日の上限を使い切る場合があります)\n実行しますか?`
             )) return;
         }
 
@@ -1094,17 +1095,24 @@ const SvPlayer = (() => {
         frontLayer = 1 - frontLayer;
     }
 
-    // 視点(PAN)変更後の表示更新: 現在コマを新しい向きで取り直し、先読みも更新
+    // 視点(PAN)変更後の表示更新: 現在コマを新しい向きで取り直す。
+    // 先のコマの先読みは withPrefetch=true のときだけ行う。
+    // (ドラッグ中は現在コマのみ取得し、先読みは指を離したときに1回だけ行う。
+    //  以前はドラッグ中 140ms ごとに先の8コマも取り直しており、課金が大きく膨らんでいた)
     let povRefreshTimer = null;
-    function refreshPov() {
+    let povPrefetchPending = false;
+    function refreshPov(withPrefetch = true) {
+        if (withPrefetch) povPrefetchPending = true;
         if (povRefreshTimer) return;
         povRefreshTimer = setTimeout(async () => {
             povRefreshTimer = null;
+            const doPrefetch = povPrefetchPending;
+            povPrefetchPending = false;
             const frame = frames[currentIndex];
             if (!frame) return;
             const img = await fetchFrameImage(frame);
             if (img && frame === frames[currentIndex]) swapLayerTo(img.src);
-            prefetchAhead(currentIndex + 1);
+            if (doPrefetch) prefetchAhead(currentIndex + 1);
             updateRecenterButton();
         }, POV_REFRESH_MS);
     }
@@ -1143,7 +1151,7 @@ const SvPlayer = (() => {
             pitchOffset = Math.max(-35, Math.min(35, pitchOffset));
             lastX = e.clientX;
             lastY = e.clientY;
-            refreshPov();
+            refreshPov(false); // ドラッグ中は現在コマだけ更新(先読みは pointerup で)
         });
 
         videoWrap.addEventListener("pointerup", (e) => {
