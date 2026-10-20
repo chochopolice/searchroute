@@ -26,7 +26,7 @@ const PANO_PREP_CONCURRENCY = 3;   // パノラマ解決の同時リクエスト
 // --- 画像の中継先(Cloudflare Worker) ---
 // ★ Worker を作成したら、その URL(末尾は /sv)に書き換える
 // Street View Static API のキーと署名は Worker 側にだけ置き、ブラウザから Google を直接呼ばない
-const SV_PROXY_URL = "https://steep-star-2b5c.o06d012.workers.dev/";
+const SV_PROXY_URL = "https://steep-star-2b5c.o06d012.workers.dev/sv";
 
 // --- Static API 静止画シーケンス設定 ---
 const STATIC_SIZE         = "640x400"; // 取得画像サイズ(Static APIの上限は640x640)
